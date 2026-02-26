@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader
 from utils.arguments import cfgs
 
 # Local Libraries
-from models.economicgrasp import economicgrasp
+from models.economicgrasp import economicgrasp, ecograsp
 from models.loss_economicgrasp import get_loss as get_loss_economicgrasp
 from dataset.graspnet_dataset import GraspNetDataset, collate_fn
 
@@ -52,13 +52,14 @@ TRAIN_DATALOADER = DataLoader(TRAIN_DATASET, batch_size=cfgs.batch_size, shuffle
                               num_workers=2, worker_init_fn=my_worker_init_fn, collate_fn=collate_fn)
 
 # Init the model
-net = economicgrasp(seed_feat_dim=512, is_training=True)
+net = ecograsp(seed_feat_dim=512, is_training=True)
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 net.to(device)
 
 # Load the Adam optimizer
-optimizer = optim.Adam(net.parameters(), lr=cfgs.learning_rate, weight_decay=cfgs.weight_decay)
+optimizer = optim.Adam(
+    net.parameters(), lr=cfgs.learning_rate, weight_decay=cfgs.weight_decay)
 
 # Load checkpoint if there is any
 start_epoch = 0
@@ -67,7 +68,8 @@ if CHECKPOINT_PATH is not None and os.path.isfile(CHECKPOINT_PATH):
     net.load_state_dict(checkpoint['model_state_dict'])
     optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
     start_epoch = checkpoint['epoch']
-    log_string("-> loaded checkpoint %s (epoch: %d)" % (CHECKPOINT_PATH, start_epoch))
+    log_string("-> loaded checkpoint %s (epoch: %d)" %
+               (CHECKPOINT_PATH, start_epoch))
 
 
 # cosine learning rate decay
@@ -97,7 +99,8 @@ def train_one_epoch():
             if 'list' in key:
                 for i in range(len(batch_data_label[key])):
                     for j in range(len(batch_data_label[key][i])):
-                        batch_data_label[key][i][j] = batch_data_label[key][i][j].to(device)
+                        batch_data_label[key][i][j] = batch_data_label[key][i][j].to(
+                            device)
             else:
                 batch_data_label[key] = batch_data_label[key].to(device)
         data_end_time = time.time()
@@ -123,19 +126,24 @@ def train_one_epoch():
         # Accumulate statistics and print out
         for key in end_points:
             if 'A' in key or 'B' in key or 'C' in key or 'D' in key:
-                if key not in stat_dict: stat_dict[key] = 0
+                if key not in stat_dict:
+                    stat_dict[key] = 0
                 stat_dict[key] += end_points[key].item()
 
         batch_interval = 20
 
         if (batch_idx + 1) % batch_interval == 0:
-            remain_batches = (cfgs.max_epoch - EPOCH_CNT) * num_batches - batch_idx - 1
+            remain_batches = (cfgs.max_epoch - EPOCH_CNT) * \
+                num_batches - batch_idx - 1
             batch_time = time.time() - batch_start_time
             batch_start_time = time.time()
-            stat_dict['C: Remain Time (h)'] = remain_batches * batch_time / 3600
-            log_string(f' ---- epoch: {EPOCH_CNT},  batch: {batch_idx + 1} ----')
+            stat_dict['C: Remain Time (h)'] = remain_batches * \
+                batch_time / 3600
+            log_string(
+                f' ---- epoch: {EPOCH_CNT},  batch: {batch_idx + 1} ----')
             for key in sorted(stat_dict.keys()):
-                log_string(f'{key:<20}: {round(stat_dict[key] / batch_interval, 4):0<8}')
+                log_string(
+                    f'{key:<20}: {round(stat_dict[key] / batch_interval, 4):0<8}')
                 stat_dict[key] = 0
 
         data_start_time = time.time()
@@ -159,7 +167,8 @@ def train(start_epoch):
             save_dict['model_state_dict'] = net.module.state_dict()
         except:
             save_dict['model_state_dict'] = net.state_dict()
-        torch.save(save_dict, os.path.join(cfgs.log_dir, cfgs.model + '_epoch' + str(epoch + 1).zfill(2) + '.tar'))
+        torch.save(save_dict, os.path.join(cfgs.log_dir, cfgs.model +
+                   '_epoch' + str(epoch + 1).zfill(2) + '.tar'))
 
 
 if __name__ == '__main__':

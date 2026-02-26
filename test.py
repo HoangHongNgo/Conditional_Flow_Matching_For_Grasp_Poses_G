@@ -10,7 +10,7 @@ from utils.collision_detector import ModelFreeCollisionDetector
 from utils.arguments import cfgs
 
 from dataset.graspnet_dataset import GraspNetDataset, collate_fn
-from models.economicgrasp import economicgrasp, pred_decode
+from models.economicgrasp import economicgrasp, ecograsp, pred_decode
 
 # ------------ GLOBAL CONFIG ------------
 if not os.path.exists(cfgs.save_dir):
@@ -42,7 +42,7 @@ TEST_DATALOADER = DataLoader(TEST_DATASET, batch_size=cfgs.batch_size, shuffle=F
                              num_workers=2, worker_init_fn=my_worker_init_fn, collate_fn=collate_fn)
 
 # Init the model
-net = economicgrasp(seed_feat_dim=512, is_training=False)
+net = ecograsp(seed_feat_dim=512, is_training=False)
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 net.to(device)
 
@@ -50,7 +50,8 @@ net.to(device)
 checkpoint = torch.load(cfgs.checkpoint_path)
 net.load_state_dict(checkpoint['model_state_dict'])
 start_epoch = checkpoint['epoch']
-print("-> loaded checkpoint %s (epoch: %d)" % (cfgs.checkpoint_path, start_epoch))
+print("-> loaded checkpoint %s (epoch: %d)" %
+      (cfgs.checkpoint_path, start_epoch))
 
 
 # ------ Testing ------------
@@ -65,7 +66,8 @@ def inference():
             if 'list' in key:
                 for i in range(len(batch_data[key])):
                     for j in range(len(batch_data[key][i])):
-                        batch_data[key][i][j] = batch_data[key][i][j].to(device)
+                        batch_data[key][i][j] = batch_data[key][i][j].to(
+                            device)
             elif 'graph' in key:
                 for i in range(len(batch_data[key])):
                     batch_data[key][i] = batch_data[key][i].to(device)
@@ -85,21 +87,27 @@ def inference():
 
             # collision detection
             if cfgs.collision_thresh > 0:
-                cloud, _ = TEST_DATASET.get_data(data_idx, return_raw_cloud=True)
-                mfcdetector = ModelFreeCollisionDetector(cloud, voxel_size=cfgs.voxel_size)
-                collision_mask = mfcdetector.detect(gg, approach_dist=0.05, collision_thresh=cfgs.collision_thresh)
+                cloud, _ = TEST_DATASET.get_data(
+                    data_idx, return_raw_cloud=True)
+                mfcdetector = ModelFreeCollisionDetector(
+                    cloud, voxel_size=cfgs.voxel_size)
+                collision_mask = mfcdetector.detect(
+                    gg, approach_dist=0.05, collision_thresh=cfgs.collision_thresh)
                 gg = gg[~collision_mask]
 
             # save grasps
-            save_dir = os.path.join(cfgs.save_dir, SCENE_LIST[data_idx], cfgs.camera)
-            save_path = os.path.join(save_dir, str(data_idx % 256).zfill(4) + '.npy')
+            save_dir = os.path.join(
+                cfgs.save_dir, SCENE_LIST[data_idx], cfgs.camera)
+            save_path = os.path.join(save_dir, str(
+                data_idx % 256).zfill(4) + '.npy')
             if not os.path.exists(save_dir):
                 os.makedirs(save_dir)
             gg.save_npy(save_path)
 
         if batch_idx % batch_interval == 0:
             toc = time.time()
-            print('Eval batch: %d, time: %fs' % (batch_idx, (toc - tic) / batch_interval))
+            print('Eval batch: %d, time: %fs' %
+                  (batch_idx, (toc - tic) / batch_interval))
             tic = time.time()
 
 
@@ -108,9 +116,11 @@ def evaluate_seen():
     # In test time, we will select top-10 grasps for each objects (sorted by our predicted score).
     # Then, for all the grasp, we will further select the top-50 grasps for evaluation.
     res, ap = ge.eval_seen(cfgs.save_dir, proc=6)
-    save_dir = os.path.join(cfgs.save_dir, 'ap_{}_seen.npy'.format(cfgs.camera))
+    save_dir = os.path.join(
+        cfgs.save_dir, 'ap_{}_seen.npy'.format(cfgs.camera))
     np.save(save_dir, res)
-    print(f"seen testing, AP 0.8={np.mean(res[:, :, :, 3])}, AP 0.4={np.mean(res[:, :, :, 1])}")
+    print(
+        f"seen testing, AP 0.8={np.mean(res[:, :, :, 3])}, AP 0.4={np.mean(res[:, :, :, 1])}")
 
 
 def evaluate_similar():
@@ -118,9 +128,11 @@ def evaluate_similar():
     # In test time, we will select top-10 grasps for each objects (sorted by our predicted score).
     # Then, for all the grasp, we will further select the top-50 grasps for evaluation.
     res, ap = ge.eval_similar(cfgs.save_dir, proc=6)
-    save_dir = os.path.join(cfgs.save_dir, 'ap_{}_similar.npy'.format(cfgs.camera))
+    save_dir = os.path.join(
+        cfgs.save_dir, 'ap_{}_similar.npy'.format(cfgs.camera))
     np.save(save_dir, res)
-    print(f"similar testing, AP 0.8={np.mean(res[:, :, :, 3])}, AP 0.4={np.mean(res[:, :, :, 1])}")
+    print(
+        f"similar testing, AP 0.8={np.mean(res[:, :, :, 3])}, AP 0.4={np.mean(res[:, :, :, 1])}")
 
 
 def evaluate_novel():
@@ -128,9 +140,11 @@ def evaluate_novel():
     # In test time, we will select top-10 grasps for each objects (sorted by our predicted score).
     # Then, for all the grasp, we will further select the top-50 grasps for evaluation.
     res, ap = ge.eval_novel(cfgs.save_dir, proc=6)
-    save_dir = os.path.join(cfgs.save_dir, 'ap_{}_novel.npy'.format(cfgs.camera))
+    save_dir = os.path.join(
+        cfgs.save_dir, 'ap_{}_novel.npy'.format(cfgs.camera))
     np.save(save_dir, res)
-    print(f"novel testing, AP 0.8={np.mean(res[:, :, :, 3])}, AP 0.4={np.mean(res[:, :, :, 1])}")
+    print(
+        f"novel testing, AP 0.8={np.mean(res[:, :, :, 3])}, AP 0.4={np.mean(res[:, :, :, 1])}")
 
 
 if __name__ == '__main__':

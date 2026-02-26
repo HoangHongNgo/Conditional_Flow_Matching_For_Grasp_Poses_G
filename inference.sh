@@ -1,0 +1,1 @@
+CUDA_VISIBLE_DEVICES=0 python inference.py --camera realsense --dataset_root /media/dsp520/Grasp_2T/graspnet --inference

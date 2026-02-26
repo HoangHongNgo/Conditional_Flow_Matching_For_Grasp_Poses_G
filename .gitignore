@@ -1,6 +1,40 @@
+# IDE and Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
 .DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.env/
+py310/
+Pipfile.lock
+
+# Deep Learning / Model Checkpoints
+*.pth
+*.pt
+*.ckpt
+
+# Data and Results
+dataset/
+imgs/
+results/
+logs/
+*.log
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+# Other
 /libs/graspnetAPI
-.idea/workspace.xml
-/.idea
-/results
-__pycache__
+MinkowskiEngine/

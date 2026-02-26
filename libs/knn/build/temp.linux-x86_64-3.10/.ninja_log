@@ -1,0 +1,4 @@
+# ninja log v5
+0	541	1765300595995949831	/media/dsp520/Grasp_2T/EconomicGrasp/EconomicGrasp/libs/knn/build/temp.linux-x86_64-3.10/media/dsp520/Grasp_2T/EconomicGrasp/EconomicGrasp/libs/knn/src/cuda/knn.o	238031032cca1c0
+0	16678	1765300612123949769	/media/dsp520/Grasp_2T/EconomicGrasp/EconomicGrasp/libs/knn/build/temp.linux-x86_64-3.10/media/dsp520/Grasp_2T/EconomicGrasp/EconomicGrasp/libs/knn/src/cpu/knn_cpu.o	5318963d4dd505c0
+1	16927	1765300612371949768	/media/dsp520/Grasp_2T/EconomicGrasp/EconomicGrasp/libs/knn/build/temp.linux-x86_64-3.10/media/dsp520/Grasp_2T/EconomicGrasp/EconomicGrasp/libs/knn/src/vision.o	3354090d07a25a2a

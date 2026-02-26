@@ -39,6 +39,7 @@ if __name__ == "__main__":
         scene_scores = []
         scene_width = []
         for i, obj_idx in enumerate(obj_idxs):
+            # print(os.path.join(obj_data_folders, f"{str(obj_idx - 1).zfill(3)}_labels.npz"))
             object_labels = np.load(os.path.join(obj_data_folders, f"{str(obj_idx - 1).zfill(3)}_labels.npz"))
             points = torch.from_numpy(object_labels['points'])
             pointid = torch.ones(points.shape[0]) * i

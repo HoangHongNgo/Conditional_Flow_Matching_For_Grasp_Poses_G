@@ -1,0 +1,12 @@
+# ninja log v5
+1	25391	1765300490727950232	/media/dsp520/Grasp_2T/EconomicGrasp/EconomicGrasp/libs/pointnet2/build/temp.linux-x86_64-3.10/_ext_src/src/ball_query_gpu.o	9267e0879e6ffe19
+2	25862	1765300491203950230	/media/dsp520/Grasp_2T/EconomicGrasp/EconomicGrasp/libs/pointnet2/build/temp.linux-x86_64-3.10/_ext_src/src/sampling_gpu.o	82a63ece0d2f437d
+1	26334	1765300491675950228	/media/dsp520/Grasp_2T/EconomicGrasp/EconomicGrasp/libs/pointnet2/build/temp.linux-x86_64-3.10/_ext_src/src/group_points_gpu.o	4d775277558501ec
+1	26970	1765300492307950226	/media/dsp520/Grasp_2T/EconomicGrasp/EconomicGrasp/libs/pointnet2/build/temp.linux-x86_64-3.10/_ext_src/src/cylinder_query_gpu.o	ffb7b23ae32e9fa9
+1	29007	1765300494351950218	/media/dsp520/Grasp_2T/EconomicGrasp/EconomicGrasp/libs/pointnet2/build/temp.linux-x86_64-3.10/_ext_src/src/interpolate_gpu.o	6aa700a108e29299
+1	35833	1765300501175950192	/media/dsp520/Grasp_2T/EconomicGrasp/EconomicGrasp/libs/pointnet2/build/temp.linux-x86_64-3.10/_ext_src/src/cylinder_query.o	f00cd4487de7e6b5
+1	37181	1765300502519950187	/media/dsp520/Grasp_2T/EconomicGrasp/EconomicGrasp/libs/pointnet2/build/temp.linux-x86_64-3.10/_ext_src/src/bindings.o	c8c28e4baeaf5403
+1	38649	1765300503987950182	/media/dsp520/Grasp_2T/EconomicGrasp/EconomicGrasp/libs/pointnet2/build/temp.linux-x86_64-3.10/_ext_src/src/sampling.o	25421f429b45ff89
+1	38688	1765300504031950181	/media/dsp520/Grasp_2T/EconomicGrasp/EconomicGrasp/libs/pointnet2/build/temp.linux-x86_64-3.10/_ext_src/src/group_points.o	ef3fff2d30ef7a17
+1	39130	1765300504475950180	/media/dsp520/Grasp_2T/EconomicGrasp/EconomicGrasp/libs/pointnet2/build/temp.linux-x86_64-3.10/_ext_src/src/ball_query.o	e7e4ac046c234918
+1	39154	1765300504499950180	/media/dsp520/Grasp_2T/EconomicGrasp/EconomicGrasp/libs/pointnet2/build/temp.linux-x86_64-3.10/_ext_src/src/interpolate.o	2c6cf6d2dbb4cab0
