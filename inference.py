@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 
-from models.economicgrasp import economicgrasp, ecograsp
+from models.economicgrasp import economicgrasp
 from dataset.graspnet_dataset import GraspNetDataset, collate_fn
 from utils.arguments import cfgs
 
@@ -36,7 +36,7 @@ for key in batch_data:
         batch_data[key] = batch_data[key].to(DEVICE)
 
 # ---------------- LOAD MODEL ----------------
-net = ecograsp(seed_feat_dim=512, is_training=False)
+net = economicgrasp(seed_feat_dim=512, is_training=False)
 net.to(DEVICE)
 net.eval()
 

@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader
 from utils.arguments import cfgs
 
 # Local Libraries
-from models.economicgrasp import economicgrasp, ecograsp
+from models.economicgrasp import economicgrasp, liteptgrasp
 from models.loss_economicgrasp import get_loss as get_loss_economicgrasp
 from dataset.graspnet_dataset import GraspNetDataset, collate_fn
 
@@ -52,7 +52,7 @@ TRAIN_DATALOADER = DataLoader(TRAIN_DATASET, batch_size=cfgs.batch_size, shuffle
                               num_workers=2, worker_init_fn=my_worker_init_fn, collate_fn=collate_fn)
 
 # Init the model
-net = ecograsp(seed_feat_dim=512, is_training=True)
+net = liteptgrasp(seed_feat_dim=512, is_training=True)
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 net.to(device)
@@ -61,7 +61,54 @@ net.to(device)
 optimizer = optim.Adam(
     net.parameters(), lr=cfgs.learning_rate, weight_decay=cfgs.weight_decay)
 
-# Load checkpoint if there is any
+# Load pretrained backbone if specified
+if cfgs.load is not None and os.path.isfile(cfgs.load):
+    log_string("=> Loading pretrained backbone from %s" % cfgs.load)
+    checkpoint = torch.load(cfgs.load, map_location=device)
+    
+    # 1. Weight Extraction
+    if 'model_state_dict' in checkpoint:
+        pretrained_dict = checkpoint['model_state_dict']
+    elif 'state_dict' in checkpoint:
+        pretrained_dict = checkpoint['state_dict']
+    else:
+        pretrained_dict = checkpoint
+    
+    # 2. Key Remapping (handle module. and redundant backbone. prefixes)
+    new_pretrained_dict = {}
+    for k, v in pretrained_dict.items():
+        name = k
+        if name.startswith('module.'):
+            name = name[7:]
+        
+        if name.startswith('backbone.'):
+            new_key = name
+        else:
+            new_key = 'backbone.' + name
+            
+        if new_key.startswith('backbone.backbone.'):
+            new_key = new_key.replace('backbone.backbone.', 'backbone.')
+            
+        new_pretrained_dict[new_key] = v
+            
+    # 3. Filter and Load
+    model_dict = net.state_dict()
+    matched_dict = {}
+    mismatched_keys = []
+    
+    for k, v in model_dict.items():
+        if k in new_pretrained_dict:
+            if v.size() == new_pretrained_dict[k].size():
+                matched_dict[k] = new_pretrained_dict[k]
+            else:
+                mismatched_keys.append(k)
+    
+    net.load_state_dict(matched_dict, strict=False)
+    log_string("   Successfully matched %d keys." % len(matched_dict))
+    if len(mismatched_keys) > 0:
+        log_string("   Skipped %d keys due to size mismatch." % len(mismatched_keys))
+
+# Load checkpoint to resume if there is any
 start_epoch = 0
 if CHECKPOINT_PATH is not None and os.path.isfile(CHECKPOINT_PATH):
     checkpoint = torch.load(CHECKPOINT_PATH)
@@ -152,6 +199,22 @@ def train_one_epoch():
 def train(start_epoch):
     global EPOCH_CNT
     for epoch in range(start_epoch, cfgs.max_epoch):
+        # Freeze LitePT encoder for the first 3 epochs, only if loading external weights
+        if cfgs.load is not None:
+            if epoch < 3:
+                log_string(f"--- Freezing LitePT encoder (Epoch {epoch}) ---")
+                if hasattr(net, 'module') and hasattr(net.module, 'freeze_encoder'):
+                    net.module.freeze_encoder(freeze=True)
+                elif hasattr(net, 'freeze_encoder'):
+                    net.freeze_encoder(freeze=True)
+            else:
+                if epoch == 3:
+                    log_string(f"--- Unfreezing LitePT encoder (Epoch {epoch} onwards) ---")
+                if hasattr(net, 'module') and hasattr(net.module, 'freeze_encoder'):
+                    net.module.freeze_encoder(freeze=False)
+                elif hasattr(net, 'freeze_encoder'):
+                    net.freeze_encoder(freeze=False)
+                
         EPOCH_CNT = epoch
         log_string(f'**** EPOCH {epoch:<3} ****')
         log_string('Current learning rate: %f' % (get_current_lr(epoch)))

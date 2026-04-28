@@ -1,1 +1,1 @@
-CUDA_VISIBLE_DEVICES=0 python train.py --model ecograsp --camera kinect --log_dir results/ecotransgrasp --max_epoch 10 --batch_size 28 --dataset_root /media/dsp520/Grasp_2T/graspnet
+CUDA_VISIBLE_DEVICES=0 python train.py --model litept_v3 --camera kinect --log_dir results/litept_v3 --load checkpoints/litept_S_plus_scannet/model_best.pth --max_epoch 10 --batch_size 28

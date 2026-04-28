@@ -114,6 +114,28 @@ class ResNetBase(nn.Module):
         return self.final(x)
 
 
+class SparseSelfAttention(nn.Module):
+    """Multi-head self-attention for Minkowski SparseTensors.
+    Operates on the dense feature matrix extracted from the sparse tensor,
+    then wraps the result back into a SparseTensor.
+    """
+    def __init__(self, channels, num_heads=4):
+        super().__init__()
+        self.attn = nn.MultiheadAttention(channels, num_heads, batch_first=True)
+        self.norm = nn.LayerNorm(channels)
+
+    def forward(self, x: ME.SparseTensor):
+        feats = x.F.unsqueeze(0)            # (1, N_total, C)
+        attn_out, _ = self.attn(feats, feats, feats)
+        feats = self.norm(feats + attn_out)  # residual + layernorm
+        out = ME.SparseTensor(
+            feats.squeeze(0),
+            coordinate_map_key=x.coordinate_map_key,
+            coordinate_manager=x.coordinate_manager,
+        )
+        return out
+
+
 class TDUnet(ResNetBase):
     BLOCK = BasicBlock
     DILATIONS = (1, 1, 1, 1, 1, 1, 1, 1)
@@ -127,7 +149,8 @@ class TDUnet(ResNetBase):
     # To use the model, must call initialize_coords before forward pass.
     # Once data is processed, call clear to reset the model before calling
     # initialize_coords
-    def __init__(self, in_channels, out_channels, D=3):
+    def __init__(self, in_channels, out_channels, D=3, attn_layer=True):
+        self.attn_layer = attn_layer
         ResNetBase.__init__(self, in_channels, out_channels, D)
 
     def network_initialization(self, in_channels, out_channels, D):
@@ -164,6 +187,7 @@ class TDUnet(ResNetBase):
         self.bn4 = ME.MinkowskiBatchNorm(self.inplanes)
         self.block4 = self._make_layer(self.BLOCK, self.PLANES[3],
                                        self.LAYERS[3])
+        self.self_attn = SparseSelfAttention(self.PLANES[3]) if self.attn_layer else nn.Identity()
 
         self.convtr4p16s2 = ME.MinkowskiConvolutionTranspose(
             self.inplanes, self.PLANES[4], kernel_size=2, stride=2, dimension=D)
@@ -227,6 +251,10 @@ class TDUnet(ResNetBase):
         out = self.bn4(out)
         out = self.relu(out)
         out = self.block4(out)
+
+        # Self-attention at bottleneck (tensor_stride=16)
+        if self.attn_layer:
+            out = self.self_attn(out)
 
         # tensor_stride=8
         out = self.convtr4p16s2(out)

@@ -3,8 +3,8 @@ import argparse
 parser = argparse.ArgumentParser()
 
 # data relevant
-parser.add_argument('--dataset_root', required=True, help='Dataset root')
-parser.add_argument('--camera', required=True, help='Camera split [realsense/kinect]')
+parser.add_argument('--dataset_root', default='/media/dsp520/Grasp_2T/graspnet', help='Dataset root')
+parser.add_argument('--camera', default='realsense', help='Camera split [realsense/kinect]')
 
 # log
 parser.add_argument('--log_dir', default='log', help='Dump dir to save model checkpoint [default: log]')
@@ -34,6 +34,7 @@ parser.add_argument('--width_loss_weight', type=float, default=10, help='Loss we
 # training setting
 parser.add_argument('--checkpoint_path', default=None, help='Model checkpoint path [default: None]')
 parser.add_argument('--resume', action='store_true', help='Whether to resume from checkpoint')
+parser.add_argument('--load', type=str, default=None, help='Load a pretrained backbone model path')
 parser.add_argument('--max_epoch', type=int, default=20, help='Epoch to run [default: 18]')
 parser.add_argument('--batch_size', type=int, default=4, help='Batch Size during training [default: 2]')
 parser.add_argument('--learning_rate', type=float, default=0.001, help='Initial learning rate [default: 0.001]')

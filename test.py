@@ -1,4 +1,5 @@
 import os
+import sys
 import numpy as np
 import time
 
@@ -10,7 +11,7 @@ from utils.collision_detector import ModelFreeCollisionDetector
 from utils.arguments import cfgs
 
 from dataset.graspnet_dataset import GraspNetDataset, collate_fn
-from models.economicgrasp import economicgrasp, ecograsp, pred_decode
+from models.economicgrasp import economicgrasp, liteptgrasp, pred_decode
 
 # ------------ GLOBAL CONFIG ------------
 if not os.path.exists(cfgs.save_dir):
@@ -26,23 +27,20 @@ def my_worker_init_fn(worker_id):
 # Create dataset and dataloader
 if cfgs.test_mode == 'seen':
     TEST_DATASET = GraspNetDataset(cfgs.dataset_root, split='test_seen',
-                                   camera=cfgs.camera, num_points=cfgs.num_point, remove_outlier=True, augment=False,
-                                   load_label=False)
+                                   camera=cfgs.camera, num_points=cfgs.num_point, remove_outlier=True, load_label=False, augment=False)
 elif cfgs.test_mode == 'similar':
     TEST_DATASET = GraspNetDataset(cfgs.dataset_root, split='test_similar',
-                                   camera=cfgs.camera, num_points=cfgs.num_point, remove_outlier=True, augment=False,
-                                   load_label=False)
+                                   camera=cfgs.camera, num_points=cfgs.num_point, remove_outlier=True, load_label=False, augment=False)
 elif cfgs.test_mode == 'novel':
     TEST_DATASET = GraspNetDataset(cfgs.dataset_root, split='test_novel',
-                                   camera=cfgs.camera, num_points=cfgs.num_point, remove_outlier=True, augment=False,
-                                   load_label=False)
+                                   camera=cfgs.camera, num_points=cfgs.num_point, remove_outlier=True, load_label=False, augment=False)
 
 SCENE_LIST = TEST_DATASET.scene_list()
 TEST_DATALOADER = DataLoader(TEST_DATASET, batch_size=cfgs.batch_size, shuffle=False,
                              num_workers=2, worker_init_fn=my_worker_init_fn, collate_fn=collate_fn)
 
 # Init the model
-net = ecograsp(seed_feat_dim=512, is_training=False)
+net = liteptgrasp(seed_feat_dim=512, is_training=False)
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 net.to(device)
 
@@ -80,7 +78,7 @@ def inference():
             grasp_preds = pred_decode(end_points)
 
         # Save results for evaluation
-        for i in range(cfgs.batch_size):
+        for i in range(len(grasp_preds)):
             data_idx = batch_idx * cfgs.batch_size + i
             preds = grasp_preds[i].detach().cpu().numpy()
             gg = GraspGroup(preds)
@@ -109,6 +107,12 @@ def inference():
             print('Eval batch: %d, time: %fs' %
                   (batch_idx, (toc - tic) / batch_interval))
             tic = time.time()
+
+        # DEBUG: Dừng sớm để tiết kiệm thời gian khi debug
+        is_debugging = sys.gettrace() is not None
+        if is_debugging and batch_idx >= 60:
+            print(f"DEBUG: Đã dừng sớm ở batch {batch_idx} vì đang debug")
+            break
 
 
 def evaluate_seen():

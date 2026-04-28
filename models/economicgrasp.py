@@ -12,7 +12,7 @@ from utils.arguments import cfgs
 from libs.LitePT.litept.model import LitePT
 
 
-class ecograsp(nn.Module):
+class liteptgrasp(nn.Module):
     def __init__(self, cylinder_radius=0.05, seed_feat_dim=512, is_training=True, voxel_size=0.005):
         super().__init__()
         self.is_training = is_training
@@ -24,8 +24,6 @@ class ecograsp(nn.Module):
         self.voxel_size = voxel_size
 
         # Backbone
-        self.backbone = TDUnet(
-            in_channels=3, out_channels=self.seed_feature_dim, D=3)
         self.backbone = LitePT(in_channels=1, dec_channels=[
                                self.seed_feature_dim, 252, 252, 252])
 
@@ -44,6 +42,15 @@ class ecograsp(nn.Module):
         self.grasp_head = Grasp_Head_Local_Interaction(
             num_angle=self.num_angle, num_depth=self.num_depth)
 
+    def freeze_encoder(self, freeze=True):
+        """Freezes or unfreezes the encoder part of the LitePT backbone."""
+        if hasattr(self.backbone, 'embedding'):
+            for param in self.backbone.embedding.parameters():
+                param.requires_grad = not freeze
+        if hasattr(self.backbone, 'enc'):
+            for param in self.backbone.enc.parameters():
+                param.requires_grad = not freeze
+
     def forward(self, end_points):
         # end_points:
         # - point_clouds:        (B, N, 3)    # xyz coordinates
@@ -55,21 +62,17 @@ class ecograsp(nn.Module):
         # - quantize2original:   (N_total,)   # voxel index -> original point index
         # - *_list:              length B     # python lists per batch (grasp poses, scores, etc.)
 
-        # use all sampled point cloud, [B, point_num (15000)， 3]
-
         seed_xyz = end_points['point_clouds']        # (B, N, 3)
-        seg = end_points['segmentation_label']       # (B, N)
 
         B, point_num, _ = seed_xyz.shape
         coord = seed_xyz.view(-1, 3)
-
-        batch, mask = build_object_level_batch(seg)
+        batch = torch.arange(B, device=coord.device).repeat_interleave(point_num)
 
         seed_features = self.backbone({
             'grid_size': self.voxel_size,
             'coord': coord,
             'feat': torch.ones((coord.shape[0], 1), device=coord.device),
-            'batch': batch
+            'batch': batch,
         })['feat']
 
         seed_features = seed_features.view(B, point_num, -1)  # [B, N, C]
@@ -142,35 +145,6 @@ class ecograsp(nn.Module):
 
         return end_points
 
-
-def build_object_level_batch(segmentation_label):
-    """
-    segmentation_label: (B, N), background = 0
-    return:
-        batch: (N_valid,)
-        mask : (B*N,)  # mask để lọc coord / feat tương ứng
-    """
-    B, N = segmentation_label.shape
-    device = segmentation_label.device
-
-    # flatten
-    seg_flat = segmentation_label.view(-1)          # (B*N,)
-    scene_id = torch.arange(B, device=device).repeat_interleave(N)
-
-    # bỏ background (id = 0)
-    mask = seg_flat != 0
-    seg_flat = seg_flat[mask]
-    scene_id = scene_id[mask]
-
-    # encode (scene, object) → unique code
-    pair_code = scene_id * (seg_flat.max() + 1) + seg_flat
-
-    # remap
-    _, batch = torch.unique(pair_code, return_inverse=True)
-
-    return batch, mask
-
-
 # score cls
 def pred_decode(end_points):
     batch_size = len(end_points['point_clouds'])
@@ -214,7 +188,7 @@ def pred_decode(end_points):
 
 
 class economicgrasp(nn.Module):
-    def __init__(self, cylinder_radius=0.05, seed_feat_dim=512, is_training=True, voxel_size=0.005):
+    def __init__(self, cylinder_radius=0.05, seed_feat_dim=512, is_training=True, voxel_size=0.005, attn_layer=False):
         super().__init__()
         self.is_training = is_training
         self.seed_feature_dim = seed_feat_dim
@@ -226,7 +200,7 @@ class economicgrasp(nn.Module):
 
         # Backbone
         self.backbone = TDUnet(
-            in_channels=3, out_channels=self.seed_feature_dim, D=3)
+            in_channels=3, out_channels=self.seed_feature_dim, D=3, attn_layer=attn_layer)
 
         # Objectness and graspness
         self.graspable = GraspableNet(seed_feature_dim=self.seed_feature_dim)

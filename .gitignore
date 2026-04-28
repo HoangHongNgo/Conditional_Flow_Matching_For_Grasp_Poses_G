@@ -1,40 +1,106 @@
+# ==========================
 # IDE and Editor
+# ==========================
 .vscode/
 .idea/
 *.swp
 *.swo
+*~
 
+# ==========================
 # OS files
+# ==========================
 .DS_Store
 Thumbs.db
+desktop.ini
 
+# ==========================
 # Python
+# ==========================
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+*.manifest
+*.spec
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Virtual environments
 env/
 venv/
 .env/
+.venv/
 py310/
 Pipfile.lock
 
-# Deep Learning / Model Checkpoints
+# ==========================
+# Deep Learning / Model Files
+# ==========================
 *.pth
 *.pt
 *.ckpt
+*.onnx
+*.tflite
+*.h5
+*.hdf5
+*.safetensors
+*.bin
 
+# Checkpoints directory
+checkpoints/
+
+# ==========================
 # Data and Results
+# ==========================
 dataset/
 imgs/
 results/
 logs/
 *.log
 
+# ==========================
+# Experiment Tracking
+# ==========================
+wandb/
+mlruns/
+tensorboard/
+runs/
+
+# ==========================
 # Jupyter Notebook
+# ==========================
 .ipynb_checkpoints/
 
-# Other
+# ==========================
+# C/C++ Build Artifacts
+# ==========================
+*.o
+*.obj
+*.dll
+*.dylib
+
+# ==========================
+# External Libraries (built locally)
+# ==========================
 /libs/graspnetAPI
-MinkowskiEngine/
+/libs/MinkowskiEngine
+/MinkowskiEngine/
+
+# ==========================
+# Agent / AI Config
+# ==========================
+.agent/
+.gemini/
+
+# ==========================
+# Other
+# ==========================
+*.tar.gz
+*.zip

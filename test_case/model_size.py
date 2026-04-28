@@ -1,5 +1,5 @@
 import torch
-from models.economicgrasp import economicgrasp, ecograsp
+from models.economicgrasp import economicgrasp, liteptgrasp
 
 
 def count_parameters(model):
@@ -25,7 +25,7 @@ def model_size_mb(model):
     return size_mb
 
 
-model = economicgrasp(seed_feat_dim=512, is_training=True)
+model = liteptgrasp(seed_feat_dim=512, is_training=True)
 
 print("Total params:", count_parameters(model))
 print("Trainable params:", count_trainable_parameters(model))
