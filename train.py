@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader
 from utils.arguments import cfgs
 
 # Local Libraries
-from models.economicgrasp import economicgrasp, liteptgrasp
+from models.economicgrasp import economicgrasp
 from models.loss_economicgrasp import get_loss as get_loss_economicgrasp
 from dataset.graspnet_dataset import GraspNetDataset, collate_fn
 
@@ -52,7 +52,7 @@ TRAIN_DATALOADER = DataLoader(TRAIN_DATASET, batch_size=cfgs.batch_size, shuffle
                               num_workers=2, worker_init_fn=my_worker_init_fn, collate_fn=collate_fn)
 
 # Init the model
-net = liteptgrasp(seed_feat_dim=512, is_training=True)
+net = economicgrasp(seed_feat_dim=512, is_training=True)
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 net.to(device)
@@ -110,6 +110,7 @@ if cfgs.load is not None and os.path.isfile(cfgs.load):
 
 # Load checkpoint to resume if there is any
 start_epoch = 0
+print(CHECKPOINT_PATH)
 if CHECKPOINT_PATH is not None and os.path.isfile(CHECKPOINT_PATH):
     checkpoint = torch.load(CHECKPOINT_PATH)
     net.load_state_dict(checkpoint['model_state_dict'])

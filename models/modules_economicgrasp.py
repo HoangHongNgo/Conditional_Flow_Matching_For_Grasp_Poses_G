@@ -25,13 +25,27 @@ class GraspableNet(nn.Module):
 
 
 class ViewNet(nn.Module):
-    def __init__(self, num_view, seed_feature_dim, is_training=True):
+    def __init__(self, num_view, seed_feature_dim, is_training=True, is_refine=False):
         super().__init__()
         self.num_view = num_view
         self.in_dim = seed_feature_dim
         self.is_training = is_training
+        self.is_refine = is_refine
         self.conv1 = nn.Conv1d(self.in_dim, self.in_dim, 1)
         self.conv2 = nn.Conv1d(self.in_dim, self.num_view, 1)
+
+    def _compute_view_rot(self, top_view_inds, features, B, num_seed, end_points):
+        """Compute grasp_top_view_xyz and grasp_top_view_rot from top_view_inds."""
+        top_view_inds_ = top_view_inds.view(B, num_seed, 1, 1).expand(-1, -1, -1, 3).contiguous()
+        template_views = generate_grasp_views(self.num_view).to(features.device)  # [300, 3]
+        template_views = template_views.view(1, 1, self.num_view, 3).expand(B, num_seed, -1, -1).contiguous()
+        vp_xyz = torch.gather(template_views, 2, top_view_inds_).squeeze(2)  # [B, 1024, 3]
+        vp_xyz_ = vp_xyz.view(-1, 3)
+        batch_angle = torch.zeros(vp_xyz_.size(0), dtype=vp_xyz.dtype, device=vp_xyz.device)
+        vp_rot = batch_viewpoint_params_to_matrix(-vp_xyz_, batch_angle).view(B, num_seed, 3, 3)
+        end_points['grasp_top_view_xyz'] = vp_xyz
+        end_points['grasp_top_view_rot'] = vp_rot
+        return end_points
 
     def forward(self, seed_features, end_points):
         B, _, num_seed = seed_features.size()
@@ -54,18 +68,13 @@ class ViewNet(nn.Module):
                 top_view_inds_batch = torch.multinomial(view_score_[i], 1, replacement=False)
                 top_view_inds.append(top_view_inds_batch)
             top_view_inds = torch.stack(top_view_inds, dim=0).squeeze(-1) # [B, 1024]
+
+            # When is_refine=True, also compute view xyz and rot for CFM training
+            if self.is_refine:
+                end_points = self._compute_view_rot(top_view_inds, features, B, num_seed, end_points)
         else:
             _, top_view_inds = torch.max(view_score, dim=2) # [B, 1024]
-
-            top_view_inds_ = top_view_inds.view(B, num_seed, 1, 1).expand(-1, -1, -1, 3).contiguous()
-            template_views = generate_grasp_views(self.num_view).to(features.device)  # [300, 3]
-            template_views = template_views.view(1, 1, self.num_view, 3).expand(B, num_seed, -1, -1).contiguous()
-            vp_xyz = torch.gather(template_views, 2, top_view_inds_).squeeze(2)  # [B, 1024, 3]
-            vp_xyz_ = vp_xyz.view(-1, 3)
-            batch_angle = torch.zeros(vp_xyz_.size(0), dtype=vp_xyz.dtype, device=vp_xyz.device)
-            vp_rot = batch_viewpoint_params_to_matrix(-vp_xyz_, batch_angle).view(B, num_seed, 3, 3)
-            end_points['grasp_top_view_xyz'] = vp_xyz
-            end_points['grasp_top_view_rot'] = vp_rot
+            end_points = self._compute_view_rot(top_view_inds, features, B, num_seed, end_points)
 
         end_points['grasp_top_view_inds'] = top_view_inds
         return end_points, res_features
@@ -89,6 +98,33 @@ class Cylinder_Grouping_Global_Interaction(nn.Module):
     def forward(self, seed_xyz_graspable, seed_features_graspable, vp_rot):
         coords = seed_xyz_graspable.transpose(-1, -2).unsqueeze(-1).expand(-1, -1, -1, self.nsample)
         grouped_feature = self.grouper(seed_xyz_graspable, seed_xyz_graspable, vp_rot, seed_features_graspable)
+        new_features = self.mlps(grouped_feature)
+        new_features = torch.cat([new_features, coords], dim=1).permute(0, 2, 3, 1).contiguous().view(-1, self.nsample, 256 + 3)
+        new_features = self.local_interaction_module(new_features, new_features, new_features, mask=None)
+        new_features = new_features.view(seed_xyz_graspable.shape[0], seed_xyz_graspable.shape[1], self.nsample, 3 + 256).permute(0, 3, 1, 2).contiguous()
+        new_features = self.mlps2(new_features)
+        new_features = F.max_pool2d(new_features, kernel_size=[1, new_features.size(3)])
+        new_features = new_features.squeeze(-1)
+        return new_features
+
+class Sphere_Grouping_Global_Interaction(nn.Module):
+    def __init__(self, nsample, seed_feature_dim, sphere_radius=0.05):
+        super().__init__()
+        self.nsample = nsample
+        self.in_dim = seed_feature_dim
+        self.sphere_radius = sphere_radius
+        mlps = [3 + self.in_dim, 256, 256]
+        mlps2 = [3 + 256, 256, 256]
+
+        self.grouper = QueryAndGroup(radius=sphere_radius, nsample=nsample, use_xyz=True, normalize_xyz=True)
+        self.mlps = pt_utils.SharedMLP(mlps, bn=True)
+        # local interaction module
+        self.local_interaction_module = AttentionModule(dim=3 + 256, n_head=1, msa_dropout=0.05)
+        self.mlps2 = pt_utils.SharedMLP(mlps2, bn=True)
+
+    def forward(self, seed_xyz_graspable, seed_features_graspable):
+        coords = seed_xyz_graspable.transpose(-1, -2).unsqueeze(-1).expand(-1, -1, -1, self.nsample)
+        grouped_feature = self.grouper(seed_xyz_graspable, seed_xyz_graspable, seed_features_graspable)
         new_features = self.mlps(grouped_feature)
         new_features = torch.cat([new_features, coords], dim=1).permute(0, 2, 3, 1).contiguous().view(-1, self.nsample, 256 + 3)
         new_features = self.local_interaction_module(new_features, new_features, new_features, mask=None)
@@ -147,8 +183,8 @@ class Grasp_Head_Local_Interaction(nn.Module):
         # split prediction
         end_points['grasp_angle_pred'] = angle_features  # [B, 12, num_points]
         end_points['grasp_depth_pred'] = depth_features  # [B, 4, num_points]
-        end_points['grasp_score_pred'] = score_features  # [B, 1, num_points]
-        end_points['grasp_width_pred'] = width_features  # [B, 6, num_points]
+        end_points['grasp_score_pred'] = score_features  # [B, 6, num_points]
+        end_points['grasp_width_pred'] = width_features  # [B, 1, num_points]
         return end_points
 
 

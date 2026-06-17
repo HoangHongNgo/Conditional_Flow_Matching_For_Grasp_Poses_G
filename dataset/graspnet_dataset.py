@@ -43,6 +43,9 @@ class GraspNetDataset(Dataset):
             self.sceneIds = list(range(130, 160))
         elif split == 'test_novel':
             self.sceneIds = list(range(160, 190))
+        elif split == 'eval':
+            self.sceneIds = list(range(100, 190, 6))
+
 
         self.sceneIds = ['scene_{}'.format(str(x).zfill(4)) for x in self.sceneIds]
 
@@ -156,7 +159,11 @@ class GraspNetDataset(Dataset):
         meta = scio.loadmat(self.metapath[index])
         scene = self.scenename[index]
 
-        graspness = np.load(self.graspnesspath[index])  # already remove outliers
+        if os.path.exists(self.graspnesspath[index]):
+            graspness = np.load(self.graspnesspath[index])  # already remove outliers
+        else:
+            # Test scenes don't have pre-computed graspness; use zeros as placeholder
+            graspness = np.zeros(depth.shape, dtype=np.float32).flatten()
         try:
             obj_idxs = meta['cls_indexes'].flatten().astype(np.int32)
             poses = meta['poses']

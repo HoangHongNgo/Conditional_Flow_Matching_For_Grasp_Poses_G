@@ -11,7 +11,7 @@ from utils.collision_detector import ModelFreeCollisionDetector
 from utils.arguments import cfgs
 
 from dataset.graspnet_dataset import GraspNetDataset, collate_fn
-from models.economicgrasp import economicgrasp, liteptgrasp, pred_decode
+from models.economicgrasp import economicgrasp, pred_decode
 
 # ------------ GLOBAL CONFIG ------------
 if not os.path.exists(cfgs.save_dir):
@@ -40,7 +40,7 @@ TEST_DATALOADER = DataLoader(TEST_DATASET, batch_size=cfgs.batch_size, shuffle=F
                              num_workers=2, worker_init_fn=my_worker_init_fn, collate_fn=collate_fn)
 
 # Init the model
-net = liteptgrasp(seed_feat_dim=512, is_training=False)
+net = economicgrasp(seed_feat_dim=512, is_training=False)
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 net.to(device)
 

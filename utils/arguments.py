@@ -5,6 +5,7 @@ parser = argparse.ArgumentParser()
 # data relevant
 parser.add_argument('--dataset_root', default='/media/dsp520/Grasp_2T/graspnet', help='Dataset root')
 parser.add_argument('--camera', default='realsense', help='Camera split [realsense/kinect]')
+parser.add_argument('--split', default='train', help='Dataset split [train/eval/test/test_seen/test_similar/test_novel]')
 
 # log
 parser.add_argument('--log_dir', default='log', help='Dump dir to save model checkpoint [default: log]')
@@ -33,6 +34,7 @@ parser.add_argument('--width_loss_weight', type=float, default=10, help='Loss we
 
 # training setting
 parser.add_argument('--checkpoint_path', default=None, help='Model checkpoint path [default: None]')
+parser.add_argument('--cfm_checkpoint_path', type=str, default='logs_refine/refine/cfm_latest.tar', help='CFM Model checkpoint path')
 parser.add_argument('--resume', action='store_true', help='Whether to resume from checkpoint')
 parser.add_argument('--load', type=str, default=None, help='Load a pretrained backbone model path')
 parser.add_argument('--max_epoch', type=int, default=20, help='Epoch to run [default: 18]')
@@ -40,6 +42,7 @@ parser.add_argument('--batch_size', type=int, default=4, help='Batch Size during
 parser.add_argument('--learning_rate', type=float, default=0.001, help='Initial learning rate [default: 0.001]')
 parser.add_argument('--weight_decay', type=float, default=0, help='Optimization L2 weight decay [default: 0]')
 parser.add_argument('--voxel_size', type=float, default=0.005, help='Voxel size (in metters)')
+parser.add_argument('--use_cached_features', action='store_true', help='Bypass base model, use pre-extracted `.pt` CFM features.')
 
 # testing setting
 parser.add_argument('--save_dir', type=str, help='Dir to save outputs')
@@ -49,4 +52,4 @@ parser.add_argument('--collision_thresh', type=float, default=0,
 parser.add_argument('--inference', action='store_true', help='Whether to inference')
 
 
-cfgs = parser.parse_args()
+cfgs, _ = parser.parse_known_args()

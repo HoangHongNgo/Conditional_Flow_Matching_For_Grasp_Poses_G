@@ -1,4 +1,4 @@
-CUDA_VISIBLE_DEVICES=0 python test.py --model liteptgrasp --save_dir results/liteptgrasp/test_ep10_seen --checkpoint_path results/liteptgrasp/liteptgrasp_epoch10.tar --camera kinect --test_mode seen --inference --batch_size 32
+CUDA_VISIBLE_DEVICES=0 python test.py --model liteptgrasp --save_dir results/liteptgrasp/test_ep10_seen --checkpoint_path results/liteptgrasp/liteptgrasp_epoch15.tar --camera kinect --test_mode novel --inference --batch_size 32
 
 kinect, AP Seen=0.5758219612363848
 seen testing, AP 0.8=0.6879559933002386, AP 0.4=0.4975348317630875

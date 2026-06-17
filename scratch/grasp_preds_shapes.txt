@@ -1,0 +1,5 @@
+=== GRASP_PREDS SHAPES ===
+
+Type: List
+Length (Batch Size): 1
+Scene [0] | Type: Tensor | Shape: [1024, 17]

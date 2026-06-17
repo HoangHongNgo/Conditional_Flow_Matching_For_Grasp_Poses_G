@@ -63,6 +63,7 @@ dataset/
 imgs/
 results/
 logs/
+log/
 *.log
 
 # ==========================
@@ -92,12 +93,6 @@ runs/
 /libs/graspnetAPI
 /libs/MinkowskiEngine
 /MinkowskiEngine/
-
-# ==========================
-# Agent / AI Config
-# ==========================
-.agent/
-.gemini/
 
 # ==========================
 # Other

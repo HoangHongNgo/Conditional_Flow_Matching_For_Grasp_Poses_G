@@ -195,4 +195,173 @@ def process_grasp_labels(end_points):
     return batch_grasp_views_rot, end_points
 
 
+def process_grasp_labels_without_seed_mapping(end_points):
+    """ 
+    Process labels according to scene points and object poses, 
+    but SKIPPING the K-NN mapping to sampled seed points (seed_xyz)
+    and SKIPPING the predicted view-specific extraction and valid mask creation.
+    
+    Returns lists of tensors (one per batch item) because the number of 
+    ground-truth grasp points varies between different scenes in a batch.
+    """
+    poses_list = end_points['object_poses_list']
+    batch_size = len(poses_list)
 
+    batch_grasp_points = []
+    batch_grasp_views_rot = []
+    batch_view_graspness = []
+    batch_top_view_index = []
+    batch_grasp_rotations = []
+    batch_grasp_depth = []
+    batch_grasp_scores = []
+    batch_grasp_widths = []
+
+    for i in range(batch_size):
+        poses = poses_list[i]  # List of object poses for the i-th scene
+
+        # 1. Merge all object grasp labels and transform them to the scene coordinates
+        grasp_points_merged = []
+        grasp_views_rot_merged = []
+        grasp_rotations_merged = []
+        grasp_depth_merged = []
+        grasp_scores_merged = []
+        grasp_widths_merged = []
+        view_graspness_merged = []
+        top_view_index_merged = []
+
+        for obj_idx, pose in enumerate(poses):
+            grasp_points = end_points['grasp_points_list'][i][obj_idx]
+            grasp_rotations = end_points['grasp_rotations_list'][i][obj_idx]
+            grasp_depth = end_points['grasp_depth_list'][i][obj_idx]
+            grasp_scores = end_points['grasp_scores_list'][i][obj_idx]
+            grasp_widths = end_points['grasp_widths_list'][i][obj_idx]
+            view_graspness = end_points['view_graspness_list'][i][obj_idx]
+            top_view_index = end_points['top_view_index_list'][i][obj_idx]
+            num_grasp_points = grasp_points.size(0)
+
+            # Keep only the top 10 best grasp points with the highest scores on this object
+            best_scores_obj = torch.max(grasp_scores, dim=1)[0]  # [num_grasp_points]
+            k_obj = min(10, num_grasp_points)
+            if k_obj > 0:
+                _, top_indices_obj = torch.topk(best_scores_obj, k=k_obj, largest=True, sorted=True)
+                grasp_points = grasp_points[top_indices_obj]
+                grasp_rotations = grasp_rotations[top_indices_obj]
+                grasp_depth = grasp_depth[top_indices_obj]
+                grasp_scores = grasp_scores[top_indices_obj]
+                grasp_widths = grasp_widths[top_indices_obj]
+                view_graspness = view_graspness[top_indices_obj]
+                top_view_index = top_view_index[top_indices_obj]
+                num_grasp_points = k_obj
+
+            # Generate and transform template grasp views
+            grasp_views = generate_grasp_views(cfgs.num_view).to(pose.device)
+            grasp_points_trans = transform_point_cloud(grasp_points, pose, '3x4')
+            grasp_views_trans = transform_point_cloud(grasp_views, pose[:3, :3], '3x3')
+
+            # Generate and transform template grasp view rotation
+            angles = torch.zeros(grasp_views.size(0), dtype=grasp_views.dtype, device=grasp_views.device)
+            grasp_views_rot = batch_viewpoint_params_to_matrix(-grasp_views, angles)
+            grasp_views_rot_trans = torch.matmul(pose[:3, :3], grasp_views_rot)
+
+            # Align template views using K-NN
+            grasp_views_ = grasp_views.transpose(0, 1).contiguous().unsqueeze(0)
+            grasp_views_trans_ = grasp_views_trans.transpose(0, 1).contiguous().unsqueeze(0)
+            view_inds = knn(grasp_views_trans_, grasp_views_, k=1).squeeze() - 1
+            view_graspness_trans = torch.index_select(view_graspness, 1, view_inds)
+            grasp_views_rot_trans = torch.index_select(grasp_views_rot_trans, 0, view_inds)
+            grasp_views_rot_trans = grasp_views_rot_trans.unsqueeze(0).expand(num_grasp_points, -1, -1, -1)
+
+            top_view_index_trans = (-1 * torch.ones((num_grasp_points, grasp_rotations.shape[1]), dtype=torch.long)
+                                    .to(pose.device))
+            tpid, tvip, tids = torch.where(view_inds == top_view_index.unsqueeze(-1))
+            top_view_index_trans[tpid, tvip] = tids
+
+            # Collect
+            grasp_points_merged.append(grasp_points_trans)
+            view_graspness_merged.append(view_graspness_trans)
+            top_view_index_merged.append(top_view_index_trans)
+            grasp_rotations_merged.append(grasp_rotations)
+            grasp_depth_merged.append(grasp_depth)
+            grasp_scores_merged.append(grasp_scores)
+            grasp_widths_merged.append(grasp_widths)
+            grasp_views_rot_merged.append(grasp_views_rot_trans)
+
+        # Concatenate labels across all objects in the scene
+        grasp_points_merged = torch.cat(grasp_points_merged, dim=0)
+        view_graspness_merged = torch.cat(view_graspness_merged, dim=0)
+        top_view_index_merged = torch.cat(top_view_index_merged, dim=0)
+        grasp_rotations_merged = torch.cat(grasp_rotations_merged, dim=0)
+        grasp_depth_merged = torch.cat(grasp_depth_merged, dim=0)
+        grasp_scores_merged = torch.cat(grasp_scores_merged, dim=0)
+        grasp_widths_merged = torch.cat(grasp_widths_merged, dim=0)
+        grasp_views_rot_merged = torch.cat(grasp_views_rot_merged, dim=0)
+
+        num_merged_points = grasp_points_merged.size(0)
+
+        # Select the viewpoint index with the maximum score for each grasp point
+        # Shape: [num_merged_points]
+        best_view_idx = torch.argmax(grasp_scores_merged, dim=1)
+
+        # Gather the 1D grasp parameters corresponding to the best viewpoint
+        best_view_idx_expand = best_view_idx.view(num_merged_points, 1, 1, 1).expand(-1, -1, 3, 3)  # [num_merged_points, 1, 3, 3]
+        top_grasp_views_rot = torch.gather(grasp_views_rot_merged, 1, best_view_idx_expand).squeeze(1)  # [num_merged_points, 3, 3]
+
+        top_grasp_rotations = torch.gather(grasp_rotations_merged, 1, best_view_idx.unsqueeze(-1)).squeeze(1)  # [num_merged_points]
+        top_grasp_depth = torch.gather(grasp_depth_merged, 1, best_view_idx.unsqueeze(-1)).squeeze(1)  # [num_merged_points]
+        top_grasp_scores = torch.gather(grasp_scores_merged, 1, best_view_idx.unsqueeze(-1)).squeeze(1)  # [num_merged_points]
+        top_grasp_widths = torch.gather(grasp_widths_merged, 1, best_view_idx.unsqueeze(-1)).squeeze(1)  # [num_merged_points]
+
+        # Filter globally to keep only the top 50 best grasp poses across the entire scene
+        k_scene = min(50, num_merged_points)
+        if k_scene > 0:
+            # Thêm nhiễu ngẫu nhiên cực nhỏ (1e-5) để xáo trộn công bằng các grasp bị trùng điểm 1.0 (ties)
+            # top_grasp_scores_noisy = top_grasp_scores + torch.rand_like(top_grasp_scores) * 1e-5
+            # _, top_indices_scene = torch.topk(top_grasp_scores_noisy, k=k_scene, largest=True, sorted=True)
+            
+            # Tạm thời comment logic xáo trộn theo yêu cầu của user
+            _, top_indices_scene = torch.topk(top_grasp_scores, k=k_scene, largest=True, sorted=True)
+            grasp_points_merged = grasp_points_merged[top_indices_scene]
+            top_grasp_views_rot = top_grasp_views_rot[top_indices_scene]
+            top_grasp_rotations = top_grasp_rotations[top_indices_scene]
+            top_grasp_depth = top_grasp_depth[top_indices_scene]
+            top_grasp_scores = top_grasp_scores[top_indices_scene]
+            top_grasp_widths = top_grasp_widths[top_indices_scene]
+
+        # Append the filtered single best grasp pose parameters to the batch lists
+        batch_grasp_points.append(grasp_points_merged)
+        batch_grasp_views_rot.append(top_grasp_views_rot)
+        batch_grasp_rotations.append(top_grasp_rotations)
+        batch_grasp_depth.append(top_grasp_depth)
+        batch_grasp_scores.append(top_grasp_scores)
+        batch_grasp_widths.append(top_grasp_widths)
+
+    # Synthesize the complete rotation matrix combining both viewpoint rotation and grasp rotation angle
+    import numpy as np
+    batch_grasp_views_rot_complete = []
+    for i in range(batch_size):
+        views_rot = batch_grasp_views_rot[i]  # [top_k_scene, 3, 3]
+        angle_idxs = batch_grasp_rotations[i]  # [top_k_scene]
+        
+        # 1. Convert angle index to continuous angle in radians (indxs * pi / 12)
+        grasp_angle = angle_idxs.to(views_rot.dtype) * np.pi / 12.0  # [top_k_scene]
+        
+        # 2. Build the local 2D rotation matrix R1 representing rotation around X-axis
+        ones = torch.ones(grasp_angle.shape[0], dtype=grasp_angle.dtype, device=grasp_angle.device)
+        zeros = torch.zeros(grasp_angle.shape[0], dtype=grasp_angle.dtype, device=grasp_angle.device)
+        sin = torch.sin(grasp_angle)
+        cos = torch.cos(grasp_angle)
+        R1 = torch.stack([ones, zeros, zeros, zeros, cos, -sin, zeros, sin, cos], dim=-1).reshape([-1, 3, 3])  # [top_k_scene, 3, 3]
+        
+        # 3. Multiply the rotated base viewpoint matrix by the local rotation R1
+        views_rot_complete = torch.matmul(views_rot, R1)  # [top_k_scene, 3, 3]
+        batch_grasp_views_rot_complete.append(views_rot_complete)
+
+    # Store the lists of 1D and 3D tensors in end_points
+    end_points['batch_grasp_point'] = batch_grasp_points  # list of B tensors, each [top_k_scene, 3] (top_k_scene <= 50)
+    end_points['batch_grasp_views_rot'] = batch_grasp_views_rot_complete  # list of B tensors, each [top_k_scene, 3, 3]
+    end_points['batch_grasp_rotations'] = batch_grasp_rotations  # list of B tensors, each [top_k_scene]
+    end_points['batch_grasp_depth'] = batch_grasp_depth  # list of B tensors, each [top_k_scene]
+    end_points['batch_grasp_score'] = batch_grasp_scores  # list of B tensors, each [top_k_scene]
+    end_points['batch_grasp_width'] = batch_grasp_widths  # list of B tensors, each [top_k_scene]
+
+    return batch_grasp_views_rot_complete, end_points

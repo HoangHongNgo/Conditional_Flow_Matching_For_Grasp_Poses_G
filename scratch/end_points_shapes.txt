@@ -1,0 +1,56 @@
+=== END_POINTS SHAPES ===
+
+Key: point_clouds                   | Type: Tensor | Shape: [1, 20000, 3]
+Key: cloud_colors                   | Type: Tensor | Shape: [1, 20000, 3]
+Key: coordinates_for_voxel          | Type: Tensor | Shape: [1, 20000, 3]
+Key: graspness_label                | Type: Tensor | Shape: [1, 20000, 1]
+Key: objectness_label               | Type: Tensor | Shape: [1, 20000]
+Key: segmentation_label             | Type: Tensor | Shape: [1, 20000]
+Key: object_poses_list              | Type: List   | Length: 1
+    -> Item[0] is List with Length: 9
+        -> Item[0][0] is Tensor with Shape: [3, 4]
+Key: grasp_points_list              | Type: List   | Length: 1
+    -> Item[0] is List with Length: 9
+        -> Item[0][0] is Tensor with Shape: [206, 3]
+Key: grasp_rotations_list           | Type: List   | Length: 1
+    -> Item[0] is List with Length: 9
+        -> Item[0][0] is Tensor with Shape: [206, 300]
+Key: grasp_depth_list               | Type: List   | Length: 1
+    -> Item[0] is List with Length: 9
+        -> Item[0][0] is Tensor with Shape: [206, 300]
+Key: grasp_widths_list              | Type: List   | Length: 1
+    -> Item[0] is List with Length: 9
+        -> Item[0][0] is Tensor with Shape: [206, 300]
+Key: grasp_scores_list              | Type: List   | Length: 1
+    -> Item[0] is List with Length: 9
+        -> Item[0][0] is Tensor with Shape: [206, 300]
+Key: view_graspness_list            | Type: List   | Length: 1
+    -> Item[0] is List with Length: 9
+        -> Item[0][0] is Tensor with Shape: [206, 300]
+Key: top_view_index_list            | Type: List   | Length: 1
+    -> Item[0] is List with Length: 9
+        -> Item[0][0] is Tensor with Shape: [206, 300]
+Key: quantize2original              | Type: Tensor | Shape: [20000]
+Key: coors                          | Type: Tensor | Shape: [11125, 4]
+Key: feats                          | Type: Tensor | Shape: [11125, 3]
+Key: objectness_score               | Type: Tensor | Shape: [1, 2, 20000]
+Key: graspness_score                | Type: Tensor | Shape: [1, 20000]
+Key: xyz_graspable                  | Type: Tensor | Shape: [1, 1024, 3]
+Key: D: Graspable Points            | Type: Tensor | Shape: []
+Key: view_score                     | Type: Tensor | Shape: [1, 1024, 300]
+Key: grasp_top_view_xyz             | Type: Tensor | Shape: [1, 1024, 3]
+Key: grasp_top_view_rot             | Type: Tensor | Shape: [1, 1024, 3, 3]
+Key: grasp_top_view_inds            | Type: Tensor | Shape: [1, 1024]
+Key: batch_grasp_point              | Type: Tensor | Shape: [1, 1024, 3]
+Key: batch_grasp_rotations          | Type: Tensor | Shape: [1, 1024]
+Key: batch_grasp_depth              | Type: Tensor | Shape: [1, 1024]
+Key: batch_grasp_score              | Type: Tensor | Shape: [1, 1024]
+Key: batch_grasp_width              | Type: Tensor | Shape: [1, 1024]
+Key: batch_grasp_view_graspness     | Type: Tensor | Shape: [1, 1024, 300]
+Key: batch_valid_mask               | Type: Tensor | Shape: [1, 1024]
+Key: C: Valid Points                | Type: Tensor | Shape: []
+Key: group_features                 | Type: Tensor | Shape: [1, 256, 1024]
+Key: grasp_angle_pred               | Type: Tensor | Shape: [1, 13, 1024]
+Key: grasp_depth_pred               | Type: Tensor | Shape: [1, 5, 1024]
+Key: grasp_score_pred               | Type: Tensor | Shape: [1, 6, 1024]
+Key: grasp_width_pred               | Type: Tensor | Shape: [1, 1, 1024]
