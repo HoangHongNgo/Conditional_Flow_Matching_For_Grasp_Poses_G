@@ -65,6 +65,13 @@ results/
 logs/
 log/
 *.log
+cfm_generation.log
+Loading
+
+# Generated evaluation artifacts
+doc/test_cfm_outputs_seen/
+doc/test_cfm_outputs_seen_realsense/
+doc/test_flow_outputs/
 
 # ==========================
 # Experiment Tracking
@@ -93,6 +100,10 @@ runs/
 /libs/graspnetAPI
 /libs/MinkowskiEngine
 /MinkowskiEngine/
+
+# Local tooling and agent state
+/.codex-local/
+/codex-desktop-linux/
 
 # ==========================
 # Other

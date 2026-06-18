@@ -9,3 +9,6 @@ Command to use:
 Use the python binary directly from the `py310` directory:
 ```bash
 ./py310/bin/python <script_name.py> [args...]
+```
+
+Do not use plain `python`, system Python, or a separately activated environment for project scripts unless the user explicitly asks.

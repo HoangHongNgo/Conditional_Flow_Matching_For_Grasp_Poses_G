@@ -11,7 +11,7 @@ sys.path.append(ROOT_DIR)
 
 from graspnetAPI import GraspNet, GraspGroup
 from flow.utils.cfm_norm import denormalize_x
-from utils.lie import exp_so3
+from flow.utils.lie import exp_so3
 
 def main():
     parser = argparse.ArgumentParser(description="Script hiển thị prior distribution và target grasp distribution của Flow Matching")

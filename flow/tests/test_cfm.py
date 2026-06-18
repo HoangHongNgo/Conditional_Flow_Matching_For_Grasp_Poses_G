@@ -19,7 +19,7 @@ import MinkowskiEngine as ME
 
 from flow.models.grasp_cfm import SceneMinkEncoder, GraspVelocityMLP
 from flow.utils.cfm_solver import euler_solve
-from utils.lie import exp_so3
+from flow.utils.lie import exp_so3
 
 def extract_scene_inputs(base_net, batch_data):
     """

@@ -6,15 +6,11 @@ description: Run inference on specific scenes using the EconomicGrasp model
 
 ## Quick Inference
 
-// turbo
-
-```bash
-source /media/dsp520/Grasp_2T/EconomicGrasp/EconomicGrasp/py310/bin/activate
-```
+Use the project Python binary directly. Do not use plain `python`.
 
 ```bash
 cd /media/dsp520/Grasp_2T/EconomicGrasp/EconomicGrasp
-CUDA_VISIBLE_DEVICES=0 python inference.py \
+CUDA_VISIBLE_DEVICES=0 ./py310/bin/python inference.py \
     --camera kinect \
     --dataset_root /media/dsp520/Grasp_2T/graspnet \
     --inference
@@ -45,5 +41,5 @@ grasp_score_pred     : (B, 6, M)
 Use `test_case/visualize_grasp.py` for 3D grasp visualization with Open3D:
 ```bash
 cd /media/dsp520/Grasp_2T/EconomicGrasp/EconomicGrasp
-python test_case/test_visualize_grasp.py
+./py310/bin/python test_case/test_visualize_grasp.py
 ```

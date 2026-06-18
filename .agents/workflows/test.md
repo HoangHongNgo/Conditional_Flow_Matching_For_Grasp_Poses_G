@@ -8,20 +8,16 @@ description: Test and evaluate the EconomicGrasp model on GraspNet-1Billion
 - Trained checkpoint available (e.g. `results/economicgrasp/economicgrasp_epoch10.tar`)
 - Or download pre-trained: [kinect](https://github.com/iSEE-Laboratory/EconomicGrasp/releases/download/v1/economicgrasp_kinect.tar) | [realsense](https://github.com/iSEE-Laboratory/EconomicGrasp/releases/download/v1/economicgrasp_realsense.tar)
 
-## Activate Environment
+## Python Environment
 
-// turbo
-
-```bash
-source /media/dsp520/Grasp_2T/EconomicGrasp/EconomicGrasp/py310/bin/activate
-```
+Use the project Python binary directly. Do not use plain `python`.
 
 ## Testing Commands
 
 ### Test on Seen Split
 ```bash
 cd /media/dsp520/Grasp_2T/EconomicGrasp/EconomicGrasp
-CUDA_VISIBLE_DEVICES=0 python test.py \
+CUDA_VISIBLE_DEVICES=0 ./py310/bin/python test.py \
     --model economicgrasp \
     --save_dir results/economicgrasp/test_ep10_seen \
     --checkpoint_path results/economicgrasp/economicgrasp_epoch10.tar \
@@ -34,7 +30,7 @@ CUDA_VISIBLE_DEVICES=0 python test.py \
 ### Test on Similar Split
 ```bash
 cd /media/dsp520/Grasp_2T/EconomicGrasp/EconomicGrasp
-CUDA_VISIBLE_DEVICES=0 python test.py \
+CUDA_VISIBLE_DEVICES=0 ./py310/bin/python test.py \
     --model economicgrasp \
     --save_dir results/economicgrasp/test_ep10_similar \
     --checkpoint_path results/economicgrasp/economicgrasp_epoch10.tar \
@@ -47,7 +43,7 @@ CUDA_VISIBLE_DEVICES=0 python test.py \
 ### Test on Novel Split
 ```bash
 cd /media/dsp520/Grasp_2T/EconomicGrasp/EconomicGrasp
-CUDA_VISIBLE_DEVICES=0 python test.py \
+CUDA_VISIBLE_DEVICES=0 ./py310/bin/python test.py \
     --model economicgrasp \
     --save_dir results/economicgrasp/test_ep10_novel \
     --checkpoint_path results/economicgrasp/economicgrasp_epoch10.tar \

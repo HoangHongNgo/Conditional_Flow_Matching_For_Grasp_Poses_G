@@ -10,15 +10,11 @@ description: Train the EconomicGrasp model
 
 ## Standard Training Command
 
-// turbo
-
-```bash
-source /media/dsp520/Grasp_2T/EconomicGrasp/EconomicGrasp/py310/bin/activate
-```
+Use the project Python binary directly. Do not use plain `python`.
 
 ```bash
 cd /media/dsp520/Grasp_2T/EconomicGrasp/EconomicGrasp
-CUDA_VISIBLE_DEVICES=0 python train.py \
+CUDA_VISIBLE_DEVICES=0 ./py310/bin/python train.py \
     --model economicgrasp \
     --camera kinect \
     --log_dir results/economicgrasp \
@@ -44,7 +40,7 @@ CUDA_VISIBLE_DEVICES=0 python train.py \
 
 ```bash
 cd /media/dsp520/Grasp_2T/EconomicGrasp/EconomicGrasp
-CUDA_VISIBLE_DEVICES=0 python train.py \
+CUDA_VISIBLE_DEVICES=0 ./py310/bin/python train.py \
     --model liteptgrasp \
     --camera kinect \
     --log_dir results/liteptgrasp \
@@ -57,7 +53,7 @@ CUDA_VISIBLE_DEVICES=0 python train.py \
 
 ```bash
 cd /media/dsp520/Grasp_2T/EconomicGrasp/EconomicGrasp
-CUDA_VISIBLE_DEVICES=0 python train.py \
+CUDA_VISIBLE_DEVICES=0 ./py310/bin/python train.py \
     --model economicgrasp \
     --camera kinect \
     --log_dir results/economicgrasp \

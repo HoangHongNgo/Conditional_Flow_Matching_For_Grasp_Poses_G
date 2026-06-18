@@ -4,6 +4,7 @@
 
 - This is a Python 3.10 / CUDA 12+ deep learning repository for EconomicGrasp.
 - Core entry points include `train.py`, `test.py`, `inference.py`, `train.sh`, `eval.sh`, and the `flow/` CFM pipeline.
+- On the `cfm` branch, the primary working area is the `flow/` directory. Prefer inspecting and editing `flow/` first unless the user explicitly asks to work elsewhere.
 - Large local assets such as datasets, checkpoints, generated results, caches, and compiled extensions should be treated as environment state unless the user explicitly asks to change them.
 
 ## Git Workflow
@@ -25,10 +26,17 @@
 ## Verification
 
 - Prefer the narrowest verification that covers the change.
+- Whenever running Python scripts, training loops, or tests in this project, always use the project virtual environment by invoking the Python binary directly:
+
+  ```bash
+  ./py310/bin/python <script_name.py> [args...]
+  ```
+
+- Do not use plain `python`, system Python, or a separately activated environment for project scripts unless the user explicitly asks.
 - For Python-only edits, at minimum run syntax checks on touched Python files when full tests are not practical:
 
   ```bash
-  python -m py_compile path/to/file.py
+  ./py310/bin/python -m py_compile path/to/file.py
   ```
 
 - For model, dataset, training, or inference changes, use a focused smoke command where possible before full GPU runs.
@@ -46,5 +54,9 @@
 - Prefer `rg` and `rg --files` for searching.
 - Use existing project patterns before introducing new abstractions.
 - Add comments only when they clarify non-obvious behavior.
+- If the user's request is unclear, ask specific follow-up questions instead of guessing the intent, context, or expected outcome.
+- Write an English docstring for every Python function that is added or modified.
+- Write all source-code comments and annotations in English.
+- For key tensors and variables, proactively annotate shapes in nearby comments, for example `# [B, 1024, 3]` or `# Shape: list of length B of tensors with shape [N, 3]`.
 - Treat files under `scratch/` as exploratory unless the user asks to productionize them.
 - Avoid editing vendored or third-party code under `libs/`, `MinkowskiEngine/`, or `codex-desktop-linux/` unless the task is specifically about those directories.

@@ -11,7 +11,7 @@ from dataset.graspnet_dataset import GraspNetDataset, collate_fn
 from models.flowgrasp import economic_graspable
 from utils.label_generation import process_grasp_labels_without_seed_mapping
 from utils.arguments import cfgs
-from utils.lie import log_SO3, bracket_so3, exp_so3
+from flow.utils.lie import log_SO3, bracket_so3, exp_so3
 
 def test_generate_single_with_lie():
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
