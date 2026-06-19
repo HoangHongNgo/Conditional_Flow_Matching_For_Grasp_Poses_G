@@ -82,9 +82,17 @@ class SceneMinkEncoder(nn.Module):
 class GraspVelocityMLP(nn.Module):
     """
     MLP that models the conditional vector field v_theta.
-    Maps [x_t, t, scene_cond] to the target flow velocity vector.
+    Maps [x_t, t, seed_cond] to the target flow velocity vector.
     """
-    def __init__(self, grasp_dim=8, cond_dim=256, hidden_dim=512):
+    def __init__(self, grasp_dim=5, cond_dim=256, hidden_dim=512):
+        """Initialize the velocity MLP for seed-conditioned CFM.
+
+        Args:
+            grasp_dim (int): Target grasp dimension. Defaults to 5 for
+                [omega(3), width(1), depth(1)].
+            cond_dim (int): Per-seed condition feature dimension.
+            hidden_dim (int): Hidden layer width.
+        """
         super().__init__()
         in_dim = grasp_dim + 1 + cond_dim
         
@@ -98,25 +106,34 @@ class GraspVelocityMLP(nn.Module):
             nn.Linear(hidden_dim // 2, grasp_dim)
         )
 
-    def forward(self, x_t, t, scene_cond):
+    def forward(self, x_t, t, seed_cond):
         """
-        x_t: [B, 50, 8]
-        t: [B] or [B, 1]
-        scene_cond: [B, 256]
+        Predict the CFM velocity for each sampled seed target.
+
+        Args:
+            x_t (torch.Tensor): Noisy grasp targets with shape [B, M, 5].
+            t (torch.Tensor): Flow time with shape [B] or [B, 1].
+            seed_cond (torch.Tensor): Per-target seed features with shape [B, M, 256].
+
+        Returns:
+            torch.Tensor: Predicted velocity with shape [B, M, 5].
         """
         B, M, D = x_t.shape
+        assert seed_cond.shape[:2] == (B, M), (
+            f"seed_cond must have shape [B, M, C], got {tuple(seed_cond.shape)}"
+        )
         
         # Reshape time variable to [B, 1]
         if t.ndim == 1:
             t = t.unsqueeze(-1)
             
-        # Re-broadcast and repeat time variable and scene condition for all 50 grasps
-        t_flat = t.unsqueeze(1).repeat(1, M, 1).reshape(B * M, 1)             # [B*50, 1]
-        cond_flat = scene_cond.unsqueeze(1).repeat(1, M, 1).reshape(B * M, -1) # [B*50, 256]
-        x_t_flat = x_t.reshape(B * M, D)                                       # [B*50, 8]
+        # Broadcast time and flatten per-seed condition for all sampled seeds.
+        t_flat = t.unsqueeze(1).repeat(1, M, 1).reshape(B * M, 1)  # [B * M, 1]
+        cond_flat = seed_cond.reshape(B * M, -1)  # [B * M, 256]
+        x_t_flat = x_t.reshape(B * M, D)  # [B * M, 5]
         
-        inp = torch.cat([x_t_flat, t_flat, cond_flat], dim=-1) # [B*50, 265]
-        v_flat = self.mlp(inp)                                 # [B*50, 8]
+        inp = torch.cat([x_t_flat, t_flat, cond_flat], dim=-1)  # [B * M, 262]
+        v_flat = self.mlp(inp)  # [B * M, 5]
         
         v = v_flat.reshape(B, M, D)
         return v
@@ -184,9 +201,9 @@ class economic_graspable(nn.Module):
                 coordinates_batch, features_batch, return_index=True, return_inverse=True)
 
         # [points of the whole scenes after quantize, 4] where 4 is (batch_idx, x, y, z)
-        coordinates_batch = coordinates_batch.cuda()
+        coordinates_batch = coordinates_batch.to(seed_xyz.device)
         # [points of the whole scenes after quantize, 3]
-        features_batch = features_batch.cuda()
+        features_batch = features_batch.to(seed_xyz.device)
 
         end_points['coors'] = coordinates_batch
         end_points['feats'] = features_batch

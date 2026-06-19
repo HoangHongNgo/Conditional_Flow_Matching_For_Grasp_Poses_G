@@ -5,99 +5,75 @@ import numpy as np
 def compute_norm_stats(dataset_dir, max_samples=100):
 
     """
-    Scan cached .pt files in dataset_dir and compute empirical std
-    for translation p relative to the seed points median in each scene.
+    Validate cached 5D CFM dataset files and return fixed normalization metadata.
     """
     print(f"Scanning {dataset_dir} to compute normalization statistics...")
     files = [f for f in os.listdir(dataset_dir) if f.endswith('.pt')]
     if not files:
         raise FileNotFoundError(f"No cached dataset files found in {dataset_dir}")
-    
-    # Limit number of scanned files to keep it fast
+
     files = sorted(files)[:min(max_samples, len(files))]
-    
-    all_points_centered = []
+    has_seed_conditioned_labels = False
     for f in files:
         data = torch.load(os.path.join(dataset_dir, f), map_location='cpu')
-        if 'batch_grasp_point' in data and 'xyz_graspable' in data:
-            points = data['batch_grasp_point'][0].float() # [num_grasps, 3]
-            seed_xyz = data['xyz_graspable'].squeeze(0).float() # [1024, 3]
-            
-            # Compute median of seed points in this scene
-            seed_median = torch.median(seed_xyz, dim=0)[0] # [3]
-            
-            # Center the grasp translation by subtracting seed median
-            points_centered = points - seed_median # [num_grasps, 3]
-            all_points_centered.append(points_centered)
-            
-    if not all_points_centered:
-        raise ValueError("No valid grasp and seed point data found in files!")
-        
-    all_points_centered = torch.cat(all_points_centered, dim=0) # [total_grasps, 3]
-    std_p = all_points_centered.std(dim=0)
-    
-    # Avoid division by zero
-    std_p[std_p < 1e-5] = 1.0
-    
-    stats = {
-        'std_p': std_p
-    }
-    return stats
+        has_seed_conditioned_labels = has_seed_conditioned_labels or (
+            'seed_grasp_rot_lie_list' in data and 'seed_valid_mask' in data
+        )
 
-def normalize_x(x, stats, seed_median):
+    if not has_seed_conditioned_labels:
+        raise ValueError("No seed-conditioned CFM labels found in cached dataset files.")
+
+    return {'target_dim': 5}
+
+def normalize_x(x, stats=None):
     """
-    Normalize 8D grasp pose x = [p(3), omega(3), w(1), d(1)].
-    x: [..., 8] Tensor
-    stats: dict containing 'std_p'
-    seed_median: [3] Tensor (median coordinates of seed points in this scene)
+    Normalize 5D grasp target x = [omega(3), width(1), depth(1)].
+
+    Args:
+        x (torch.Tensor): Grasp targets with shape [..., 5].
+        stats (dict | None): Optional normalization metadata.
+
+    Returns:
+        torch.Tensor: Normalized grasp targets with shape [..., 5].
     """
-    device = x.device
-    std_p = stats['std_p'].to(device)
+    assert x.shape[-1] == 5, f"normalize_x: expected last dimension 5, got {x.shape[-1]}"
     
-    p = x[..., :3]
-    omega = x[..., 3:6]
-    w = x[..., 6:7]
-    d = x[..., 7:8]
-    
-    # 1. Normalize translation relative to seed median
-    p_centered = p - seed_median.to(device)
-    p_norm = p_centered / std_p
-    
-    # 2. Normalize rotation Lie algebra by Pi
+    omega = x[..., :3]
+    w = x[..., 3:4]
+    d = x[..., 4:5]
+
+    # Normalize rotation Lie algebra by pi.
     omega_norm = omega / np.pi
     
-    # 3. Normalize width by 0.1 m
+    # Normalize width by 0.1m.
     w_norm = w / 0.1
     
-    # 4. Normalize depth (index 0-3 converted to meters, mapped [0.01, 0.04] -> [0, 1])
+    # Normalize depth meters from [0.01, 0.04] to [0, 1].
     d_norm = (d - 0.01) / 0.03
     
-    x_norm = torch.cat([p_norm, omega_norm, w_norm, d_norm], dim=-1)
+    x_norm = torch.cat([omega_norm, w_norm, d_norm], dim=-1)
     return x_norm
 
-def denormalize_x(x_norm, stats, seed_median):
+def denormalize_x(x_norm, stats=None):
     """
-    Denormalize 8D grasp pose back to physical units using seed median.
-    x_norm: [..., 8] Tensor
-    stats: dict containing 'std_p'
-    seed_median: [3] Tensor (median coordinates of seed points in this scene)
+    Denormalize 5D grasp target x = [omega(3), width(1), depth(1)].
+
+    Args:
+        x_norm (torch.Tensor): Normalized grasp targets with shape [..., 5].
+        stats (dict | None): Optional normalization metadata.
+
+    Returns:
+        torch.Tensor: Denormalized grasp targets with shape [..., 5].
     """
-    device = x_norm.device
-    std_p = stats['std_p'].to(device)
+    assert x_norm.shape[-1] == 5, f"denormalize_x: expected last dimension 5, got {x_norm.shape[-1]}"
     
-    p_norm = x_norm[..., :3]
-    omega_norm = x_norm[..., 3:6]
-    w_norm = x_norm[..., 6:7]
-    d_norm = x_norm[..., 7:8]
+    omega_norm = x_norm[..., :3]
+    w_norm = x_norm[..., 3:4]
+    d_norm = x_norm[..., 4:5]
     
-    # 1. Denormalize translation back to camera coordinates
-    p_centered = p_norm * std_p
-    p = p_centered + seed_median.to(device)
-    
-    # 2. Denormalize rotation, width, and depth
     omega = omega_norm * np.pi
     w = w_norm * 0.1
     d = d_norm * 0.03 + 0.01
     
-    x = torch.cat([p, omega, w, d], dim=-1)
+    x = torch.cat([omega, w, d], dim=-1)
     return x

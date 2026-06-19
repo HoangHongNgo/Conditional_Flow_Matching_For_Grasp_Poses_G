@@ -17,7 +17,8 @@ from models.economicgrasp import economicgrasp
 from libs.pointnet2.pointnet2_utils import furthest_point_sample, gather_operation
 import MinkowskiEngine as ME
 
-from flow.models.grasp_cfm import SceneMinkEncoder, GraspVelocityMLP
+from flow.models.grasp_cfm import GraspVelocityMLP
+from flow.models.modules_flow import Sphere_Grouping_Global_Interaction
 from flow.utils.cfm_solver import euler_solve
 from flow.utils.lie import exp_so3
 
@@ -90,8 +91,8 @@ def extract_scene_inputs(base_net, batch_data):
     batch_data, res_feat = base_net.view(seed_features_graspable, batch_data)
     seed_features_graspable = seed_features_graspable + res_feat
 
-    # Return shape: coords [B, 1024, 3], features [B, 1024, 512] (transposed back to feature dimension)
-    return seed_xyz_graspable, seed_features_graspable.transpose(1, 2)
+    # Return shape: coords [B, 1024, 3], features [B, 512, 1024].
+    return seed_xyz_graspable, seed_features_graspable
 
 def evaluate_cfm(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -134,13 +135,17 @@ def evaluate_cfm(args):
     
     # 3. Load CFM Models & Stats
     print(f"Loading CFM checkpoint: {args.cfm_checkpoint_path}")
-    encoder = SceneMinkEncoder(in_channels=512, out_channels=256).to(device)
-    mlp = GraspVelocityMLP(grasp_dim=8, cond_dim=256).to(device)
+    seed_conditioner = Sphere_Grouping_Global_Interaction(
+        nsample=args.nsample,
+        seed_feature_dim=512,
+        sphere_radius=args.sphere_radius,
+    ).to(device)
+    mlp = GraspVelocityMLP(grasp_dim=5, cond_dim=256).to(device)
     
     cfm_checkpoint = torch.load(args.cfm_checkpoint_path, map_location=device)
-    encoder.load_state_dict(cfm_checkpoint['encoder_state_dict'])
+    seed_conditioner.load_state_dict(cfm_checkpoint['seed_conditioner_state_dict'])
     mlp.load_state_dict(cfm_checkpoint['mlp_state_dict'])
-    encoder.eval()
+    seed_conditioner.eval()
     mlp.eval()
     
     stats = torch.load(args.stats_path, map_location=device)
@@ -170,30 +175,31 @@ def evaluate_cfm(args):
             B = seed_xyz.shape[0]
             
             # CFM Prior Sampling: x0 ~ N(0, I)
-            x0 = torch.randn(B, 50, 8, device=device)
+            num_seed = seed_xyz.shape[1]
+            x0 = torch.randn(B, num_seed, 5, device=device)
             
             # CFM ODE Euler Solver
             x_pred = euler_solve(
-                encoder, mlp, x0, seed_xyz, seed_feats, stats, n_steps=args.n_steps
-            ) # [B, 50, 8]
+                seed_conditioner, mlp, x0, seed_xyz, seed_feats, stats, n_steps=args.n_steps
+            )  # [B, 1024, 5]
             
         # Decode and format each batch element to GraspGroup
         for b in range(B):
             data_idx = batch_idx * cfgs.batch_size + b
-            pred_grasps = x_pred[b] # [50, 8]
+            pred_grasps = x_pred[b]  # [1024, 5]
             
-            p = pred_grasps[:, :3]      # [50, 3] (center)
-            omega = pred_grasps[:, 3:6] # [50, 3] (rotation Lie algebra)
-            w = pred_grasps[:, 6]       # [50] (width)
-            d = pred_grasps[:, 7]       # [50] (depth)
+            p = seed_xyz[b]  # [1024, 3] (center)
+            omega = pred_grasps[:, :3]  # [1024, 3] (rotation Lie algebra)
+            w = pred_grasps[:, 3]  # [1024] (width)
+            d = pred_grasps[:, 4]  # [1024] (depth)
             
             # Map Lie algebra rotation to maxtrix
-            rot_matrices = exp_so3(omega) # [50, 3, 3]
-            rot_flat = rot_matrices.reshape(50, 9)
+            rot_matrices = exp_so3(omega)  # [1024, 3, 3]
+            rot_flat = rot_matrices.reshape(num_seed, 9)
             
             # Build 17D arrays
             # 1. descending score
-            score = 0.99 - (torch.arange(50, device=device).float() / 50.0) * 0.49 # [50]
+            score = 0.99 - (torch.arange(num_seed, device=device).float() / num_seed) * 0.49  # [1024]
             score = score.view(-1, 1)
             
             # 2. clamp width & depth
@@ -263,6 +269,8 @@ if __name__ == '__main__':
     parser.add_argument('--stats_path', type=str, default='/media/dsp520/Grasp_2T/graspnet/cfm_norm_stats.pt',
                         help='Path to normalization stats')
     parser.add_argument('--n_steps', type=int, default=20, help='Number of Euler steps for inference')
+    parser.add_argument('--nsample', type=int, default=32, help='Number of neighbor seeds for spherical grouping')
+    parser.add_argument('--sphere_radius', type=float, default=0.005, help='Seed grouping radius in meters')
     parser.add_argument('--smoke_test', action='store_true', help='Run smoke test')
     
     args, _ = parser.parse_known_args()

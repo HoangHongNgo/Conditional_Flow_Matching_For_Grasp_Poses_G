@@ -2,23 +2,23 @@ import torch
 from flow.utils.cfm_norm import denormalize_x
 
 @torch.no_grad()
-def euler_solve(encoder, mlp, x0, seed_xyz, seed_feats, stats, n_steps=20):
+def euler_solve(seed_conditioner, mlp, x0, seed_xyz, seed_feats, stats, n_steps=20):
     """
     Solve the probability flow ODE using Euler method.
-    x0: [B, 50, 8]  prior samples ~ N(0, I)
-    seed_xyz: [B, 1024, 3] coordinates
-    seed_feats: [B, 1024, 512] features
+    x0: [B, N, 5] prior samples ~ N(0, I)
+    seed_xyz: [B, N, 3] coordinates
+    seed_feats: [B, 512, N] features
     stats: empirical normalization stats dict
     n_steps: number of integration steps (default: 20)
     
     Returns:
-    x_pred: [B, 50, 8] denormalized predicted grasp poses (absolute camera coords)
+    x_pred: [B, N, 5] denormalized predicted grasp configs [omega, width, depth]
     """
-    B, M, D = x0.shape
+    B, _, _ = x0.shape
     device = x0.device
     
-    # 1. Compute global scene condition
-    scene_cond = encoder(seed_xyz, seed_feats) # [B, 256]
+    # 1. Compute per-seed condition.
+    seed_cond = seed_conditioner(seed_xyz, seed_feats).transpose(1, 2).contiguous()  # [B, N, 256]
     
     # 2. Integrate flow from t=0 to t=1
     x = x0.clone()
@@ -28,15 +28,11 @@ def euler_solve(encoder, mlp, x0, seed_xyz, seed_feats, stats, n_steps=20):
         t = torch.full((B,), t_val, device=device, dtype=torch.float32) # [B]
         
         # Predict velocity
-        v = mlp(x, t, scene_cond) # [B, 50, 8]
+        v = mlp(x, t, seed_cond)  # [B, N, 5]
         
         # Euler step
         x = x + v * dt
-        
-    # Compute median of seed points for each scene in batch
-    # seed_median: [B, 1, 3]
-    seed_median = torch.median(seed_xyz, dim=1)[0].unsqueeze(1)
-        
-    # 3. Denormalize output to physical units relative to seed medians
-    x_denorm = denormalize_x(x, stats, seed_median)
+
+    # 3. Denormalize generated 5D grasp configs.
+    x_denorm = denormalize_x(x, stats)
     return x_denorm

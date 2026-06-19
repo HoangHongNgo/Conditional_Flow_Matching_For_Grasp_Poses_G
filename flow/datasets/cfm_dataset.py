@@ -5,11 +5,20 @@ from flow.utils.cfm_norm import normalize_x
 
 class CFMDataset(Dataset):
     """
-    Loads cached .pt files containing pre-extracted seed features, seed point xyz,
-    and ground truth grasps. Normalizes grasps using computed stats and pads
-    the grasps array to exactly 50 poses per scene.
+    Load cached seed-conditioned CFM samples and draw 5D grasp targets.
+
+    Each scene stores ragged grasp pools for all 1024 seeds. This dataset keeps
+    all seeds, samples one grasp configuration for each valid seed, and marks
+    invalid seeds so the training loss can ignore them.
     """
     def __init__(self, dataset_dir, stats_path=None, limit=None):
+        """Initialize the cached CFM dataset.
+
+        Args:
+            dataset_dir (str): Directory containing cached .pt scene files.
+            stats_path (str | None): Optional path to normalization stats.
+            limit (int | None): Optional maximum number of files to load.
+        """
         self.dataset_dir = dataset_dir
         self.files = sorted([f for f in os.listdir(dataset_dir) if f.endswith('.pt')])
         if limit is not None:
@@ -27,68 +36,55 @@ class CFMDataset(Dataset):
             self.stats = None
 
     def __len__(self):
+        """Return the number of cached scene files."""
         return len(self.files)
 
     def __getitem__(self, idx):
+        """Sample one score-weighted 5D grasp target for every seed in a scene."""
         file_path = os.path.join(self.dataset_dir, self.files[idx])
         data = torch.load(file_path, map_location='cpu')
         
         # 1. Seed XYZ and Features
         # Original shapes:
         #   xyz_graspable: [1, 1024, 3] -> squeeze to [1024, 3]
-        #   seed_features_graspable: [1, 512, 1024] -> squeeze and transpose to [1024, 512]
-        seed_xyz = data['xyz_graspable'].squeeze(0).float()
-        seed_feats = data['seed_features_graspable'].squeeze(0).permute(1, 0).float()
-        
-        # 2. Extract Ground Truth components from data (lists of length 1 containing Tensor)
-        gt_points = data['batch_grasp_point'][0].float()      # [num_grasps, 3]
-        gt_rot_lie = data['batch_grasp_views_rot_lie'][0].float() # [num_grasps, 3]
-        gt_width = data['batch_grasp_width'][0].float()        # [num_grasps]
-        gt_depth = data['batch_grasp_depth'][0].float()        # [num_grasps]
-        
-        num_grasps = gt_points.shape[0]
-        
-        # Depth index mapping:
-        # In original labels, batch_grasp_depth is integer indices 0 to 3.
-        # We need to map these to actual depth values in meters [0.01, 0.02, 0.03, 0.04]
-        # Depth mapping: depth_meters = 0.01 + depth_index * 0.01
-        gt_depth_meters = 0.01 + gt_depth * 0.01
-        
-        # Compute median of seed points
-        seed_median = torch.median(seed_xyz, dim=0)[0] # [3]
-        
-        # 3. Concatenate to 8D: [p, omega, w, d]
-        # Shape: [num_grasps, 8]
-        x1_raw = torch.cat([
-            gt_points,
-            gt_rot_lie,
-            gt_width.unsqueeze(-1),
-            gt_depth_meters.unsqueeze(-1)
-        ], dim=-1)
-        
-        # 4. Normalize
-        if self.stats is not None:
-            x1_norm = normalize_x(x1_raw, self.stats, seed_median)
-        else:
-            x1_norm = x1_raw
+        #   seed_features_graspable: [1, 512, 1024] -> squeeze to [512, 1024]
+        seed_xyz_all = data['xyz_graspable'].squeeze(0).float()  # [N, 3]
+        seed_feats_all = data['seed_features_graspable'].squeeze(0).float()  # [512, N]
 
-            
-        # 5. Take exactly 50 grasps
-        # Since every scene has a rich set of top grasps, we slice to 50.
-        # If any scene has fewer than 50, we replicate existing grasps to reach 50,
-        # ensuring no zero padding or grasp masking is ever needed.
-        max_grasps = 50
-        if num_grasps >= max_grasps:
-            x1 = x1_norm[:max_grasps]
+        seed_valid_mask = data['seed_valid_mask'].squeeze(0).bool()  # [N]
+        num_seed = seed_xyz_all.shape[0]
+
+        rot_pools = data['seed_grasp_rot_lie_list'][0]
+        width_pools = data['seed_grasp_width_list'][0]
+        depth_pools = data['seed_grasp_depth_list'][0]
+        score_pools = data['seed_grasp_score_list'][0]
+
+        x1_raw = torch.zeros((num_seed, 5), dtype=torch.float32)  # [N, 5]
+        sampled_scores = torch.zeros((num_seed,), dtype=torch.float32)  # [N]
+        for seed_idx in range(num_seed):
+            if not seed_valid_mask[seed_idx]:
+                continue
+
+            scores = score_pools[seed_idx].float()  # [Ki]
+            probs = scores / scores.sum()
+            grasp_idx = torch.multinomial(probs, num_samples=1).item()
+
+            x1_raw[seed_idx, :3] = rot_pools[seed_idx][grasp_idx].float()  # [3]
+            x1_raw[seed_idx, 3] = width_pools[seed_idx][grasp_idx].float()
+            x1_raw[seed_idx, 4] = depth_pools[seed_idx][grasp_idx].float()
+            sampled_scores[seed_idx] = scores[grasp_idx].float()
+
+        if self.stats is not None:
+            x1 = normalize_x(x1_raw, self.stats)
         else:
-            repeat_factor = (max_grasps + num_grasps - 1) // num_grasps
-            x1 = x1_norm.repeat(repeat_factor, 1)[:max_grasps]
+            x1 = x1_raw
         
         return {
             'x1': x1,
-            'seed_feats': seed_feats,
-            'seed_xyz': seed_xyz,
+            'target_valid_mask': seed_valid_mask,
+            'seed_xyz': seed_xyz_all,
+            'seed_feats': seed_feats_all,
+            'sampled_scores': sampled_scores,
             'scene_name': data['scene_name'],
             'frame_id': data['frame_id']
         }
-

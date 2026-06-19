@@ -12,9 +12,38 @@ from tqdm import tqdm
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from flow.datasets.cfm_dataset import CFMDataset
-from flow.models.grasp_cfm import SceneMinkEncoder, GraspVelocityMLP
+from flow.models.grasp_cfm import GraspVelocityMLP
+from flow.models.modules_flow import Sphere_Grouping_Global_Interaction
 from flow.utils.cfm_norm import compute_norm_stats
 from torchcfm.conditional_flow_matching import ExactOptimalTransportConditionalFlowMatcher
+
+
+def sample_masked_flow(FM, x0, x1, target_valid_mask):
+    """Sample CFM locations and velocities while ignoring invalid seed targets."""
+    B, _, _ = x1.shape
+    xt = torch.zeros_like(x1)  # [B, 1024, 5]
+    ut = torch.zeros_like(x1)  # [B, 1024, 5]
+    t_batch = torch.zeros(B, device=x1.device)  # [B]
+
+    for b in range(B):
+        valid_idx = torch.where(target_valid_mask[b])[0]  # [num_valid]
+        if valid_idx.numel() == 0:
+            continue
+        t_val, xt_b, ut_b = FM.sample_location_and_conditional_flow(x0[b, valid_idx], x1[b, valid_idx])
+        xt[b, valid_idx] = xt_b
+        ut[b, valid_idx] = ut_b
+        t_batch[b] = t_val[0]
+
+    return t_batch, xt, ut
+
+
+def masked_mse_loss(v_pred, ut, target_valid_mask):
+    """Compute MSE over valid seed targets only."""
+    per_seed_loss = ((v_pred - ut) ** 2).mean(dim=-1)  # [B, 1024]
+    mask = target_valid_mask.float()  # [B, 1024]
+    return (per_seed_loss * mask).sum() / mask.sum().clamp_min(1.0)
+
+
 def train_cfm(args):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using training device: {device}")
@@ -66,11 +95,15 @@ def train_cfm(args):
     print(f"  Evaluation samples: {len(val_dataset)} | Batches: {len(val_loader)}")
     
     # 3. Initialize Models
-    encoder = SceneMinkEncoder(in_channels=512, out_channels=256).to(device)
-    mlp = GraspVelocityMLP(grasp_dim=8, cond_dim=256).to(device)
+    seed_conditioner = Sphere_Grouping_Global_Interaction(
+        nsample=args.nsample,
+        seed_feature_dim=512,
+        sphere_radius=args.sphere_radius,
+    ).to(device)
+    mlp = GraspVelocityMLP(grasp_dim=5, cond_dim=256).to(device)
     
     # Optimizer & Scheduler
-    params = list(encoder.parameters()) + list(mlp.parameters())
+    params = list(seed_conditioner.parameters()) + list(mlp.parameters())
     optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=args.weight_decay)
     scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs)
     
@@ -90,41 +123,33 @@ def train_cfm(args):
     print("\nStarting CFM training split...")
     for epoch in range(1, args.epochs + 1):
         # ------------------ TRAINING STEP ------------------
-        encoder.train()
+        seed_conditioner.train()
         mlp.train()
         
         train_epoch_loss = 0.0
+        train_batches = 0
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{args.epochs} [Train]")
         for batch in pbar:
-            x1 = batch['x1'].to(device)                 # [B, 50, 8] (GT)
-            seed_xyz = batch['seed_xyz'].to(device)     # [B, 1024, 3]
-            seed_feats = batch['seed_feats'].to(device) # [B, 1024, 512]
+            x1 = batch['x1'].to(device)  # [B, 1024, 5]
+            target_valid_mask = batch['target_valid_mask'].to(device)  # [B, 1024]
+            seed_xyz = batch['seed_xyz'].to(device)  # [B, 1024, 3]
+            seed_feats = batch['seed_feats'].to(device)  # [B, 512, 1024]
             
-            B, M, D = x1.shape
+            if not target_valid_mask.any():
+                continue
             
             # Sample prior x0 ~ N(0, I)
-            x0 = torch.randn_like(x1) # [B, 50, 8]
+            x0 = torch.randn_like(x1)  # [B, 1024, 5]
+            t_batch, xt, ut = sample_masked_flow(FM, x0, x1, target_valid_mask)
             
-            # Prepare target variables
-            xt = torch.zeros_like(x1) # [B, 50, 8]
-            ut = torch.zeros_like(x1) # [B, 50, 8]
-            t_batch = torch.zeros(B, device=device) # [B]
-            
-            # Solve batch-wise optimal transport scene by scene
-            for b in range(B):
-                t_val, xt_b, ut_b = FM.sample_location_and_conditional_flow(x0[b], x1[b])
-                xt[b] = xt_b
-                ut[b] = ut_b
-                t_batch[b] = t_val[0]
-            
-            # Encode geometry
-            scene_cond = encoder(seed_xyz, seed_feats) # [B, 256]
+            # Encode local seed geometry and gather per-seed condition.
+            seed_cond = seed_conditioner(seed_xyz, seed_feats).transpose(1, 2).contiguous()  # [B, 1024, 256]
             
             # Predict velocity
-            v_pred = mlp(xt, t_batch, scene_cond) # [B, 50, 8]
+            v_pred = mlp(xt, t_batch, seed_cond)  # [B, 1024, 5]
             
-            # Standard MSE Loss
-            loss = ((v_pred - ut) ** 2).mean()
+            # Masked MSE loss ignores seeds with no valid grasp config.
+            loss = masked_mse_loss(v_pred, ut, target_valid_mask)
             
             # Optimize
             optimizer.zero_grad()
@@ -132,41 +157,37 @@ def train_cfm(args):
             optimizer.step()
             
             train_epoch_loss += loss.item()
+            train_batches += 1
             pbar.set_postfix({'loss': f"{loss.item():.4f}"})
             
         scheduler.step()
-        avg_train_loss = train_epoch_loss / len(train_loader)
+        avg_train_loss = train_epoch_loss / max(train_batches, 1)
         
         # ------------------ EVALUATION STEP ------------------
-        encoder.eval()
+        seed_conditioner.eval()
         mlp.eval()
         
         val_epoch_loss = 0.0
+        val_batches = 0
         with torch.no_grad():
             for batch in tqdm(val_loader, desc=f"Epoch {epoch}/{args.epochs} [Eval]"):
-                x1 = batch['x1'].to(device)                 # [B, 50, 8]
-                seed_xyz = batch['seed_xyz'].to(device)     # [B, 1024, 3]
-                seed_feats = batch['seed_feats'].to(device) # [B, 1024, 512]
-                
-                B, M, D = x1.shape
+                x1 = batch['x1'].to(device)  # [B, 1024, 5]
+                target_valid_mask = batch['target_valid_mask'].to(device)  # [B, 1024]
+                seed_xyz = batch['seed_xyz'].to(device)  # [B, 1024, 3]
+                seed_feats = batch['seed_feats'].to(device)  # [B, 512, 1024]
+                if not target_valid_mask.any():
+                    continue
                 
                 x0 = torch.randn_like(x1)
-                xt = torch.zeros_like(x1)
-                ut = torch.zeros_like(x1)
-                t_batch = torch.zeros(B, device=device)
+                t_batch, xt, ut = sample_masked_flow(FM, x0, x1, target_valid_mask)
                 
-                for b in range(B):
-                    t_val, xt_b, ut_b = FM.sample_location_and_conditional_flow(x0[b], x1[b])
-                    xt[b] = xt_b
-                    ut[b] = ut_b
-                    t_batch[b] = t_val[0]
-                
-                scene_cond = encoder(seed_xyz, seed_feats)
-                v_pred = mlp(xt, t_batch, scene_cond)
-                loss = ((v_pred - ut) ** 2).mean()
+                seed_cond = seed_conditioner(seed_xyz, seed_feats).transpose(1, 2).contiguous()
+                v_pred = mlp(xt, t_batch, seed_cond)
+                loss = masked_mse_loss(v_pred, ut, target_valid_mask)
                 val_epoch_loss += loss.item()
+                val_batches += 1
                 
-        avg_val_loss = val_epoch_loss / len(val_loader) if len(val_loader) > 0 else 0.0
+        avg_val_loss = val_epoch_loss / val_batches if val_batches > 0 else 0.0
         
         # Log to console
         print(f"Epoch {epoch} finished.")
@@ -181,7 +202,7 @@ def train_cfm(args):
         # Save checkpoint
         checkpoint = {
             'epoch': epoch,
-            'encoder_state_dict': encoder.state_dict(),
+            'seed_conditioner_state_dict': seed_conditioner.state_dict(),
             'mlp_state_dict': mlp.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'train_loss': avg_train_loss,
@@ -195,9 +216,9 @@ def train_cfm(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Train Conditional Flow Matching Grasp Pose Generator")
-    parser.add_argument('--dataset_dir', type=str, default='/media/dsp520/Grasp_2T/graspnet/cfm_dataset_train',
+    parser.add_argument('--dataset_dir', type=str, default='/media/dsp520/Grasp_2T/graspnet/cfm_dataset_seed5d/train',
                         help='Directory of cached pt training files')
-    parser.add_argument('--stats_path', type=str, default='/media/dsp520/Grasp_2T/graspnet/cfm_norm_stats.pt',
+    parser.add_argument('--stats_path', type=str, default='/media/dsp520/Grasp_2T/graspnet/cfm_seed5d_norm_stats.pt',
                         help='Path to normalization stats')
     parser.add_argument('--checkpoint_dir', type=str, default='flow/results',
                         help='Directory to save model checkpoints')
@@ -206,6 +227,8 @@ if __name__ == '__main__':
     parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate')
     parser.add_argument('--weight_decay', type=float, default=1e-4, help='Weight decay')
     parser.add_argument('--limit', type=int, default=None, help='Limit dataset size')
+    parser.add_argument('--nsample', type=int, default=32, help='Number of neighbor seeds for spherical grouping')
+    parser.add_argument('--sphere_radius', type=float, default=0.005, help='Seed grouping radius in meters')
     
     # Parse args (ensure batch_size is parsed as int)
     args = parser.parse_args()
