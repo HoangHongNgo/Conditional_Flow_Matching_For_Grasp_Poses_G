@@ -74,11 +74,20 @@ def to_cpu_detached(value):
     return value
 
 
-def build_output_sample(end_points, scene_name, frame_id):
-    """Build the compact frozen CFM sample saved to disk."""
+def slice_batch_value(value, batch_item_idx):
+    """Extract one scene from a batched generated value."""
+    if isinstance(value, torch.Tensor):
+        return value[batch_item_idx:batch_item_idx + 1]
+    if isinstance(value, list):
+        return [value[batch_item_idx]]
+    return value
+
+
+def build_output_sample(end_points, batch_item_idx, scene_name, frame_id):
+    """Build one compact frozen CFM sample from a batched end_points dict."""
     output = {}
     for key in KEEP_KEYS:
-        output[key] = to_cpu_detached(end_points[key])
+        output[key] = to_cpu_detached(slice_batch_value(end_points[key], batch_item_idx))
 
     output['scene_name'] = scene_name
     output['frame_id'] = frame_id
@@ -120,16 +129,19 @@ def generate_split(net, device, args, split):
             end_points = net(batch_data)
             end_points = process_grasp_labels(end_points)
 
-            if not end_points['seed_valid_mask'].any():
-                continue
+            batch_size = end_points['seed_valid_mask'].shape[0]
+            for batch_item_idx in range(batch_size):
+                if not end_points['seed_valid_mask'][batch_item_idx].any():
+                    continue
 
-            scene_name = dataset.scenename[batch_idx]
-            frame_id = dataset.frameid[batch_idx]
-            output_sample = build_output_sample(end_points, scene_name, frame_id)
+                dataset_idx = batch_idx * args.batch_size + batch_item_idx
+                scene_name = dataset.scenename[dataset_idx]
+                frame_id = dataset.frameid[dataset_idx]
+                output_sample = build_output_sample(end_points, batch_item_idx, scene_name, frame_id)
 
-            save_path = os.path.join(save_dir, f"sample_{saved_count:06d}.pt")
-            torch.save(output_sample, save_path)
-            saved_count += 1
+                save_path = os.path.join(save_dir, f"sample_{saved_count:06d}.pt")
+                torch.save(output_sample, save_path)
+                saved_count += 1
 
     print(f"[{split}] Saved {saved_count} files.")
     return saved_count
@@ -158,9 +170,6 @@ def parse_args():
 def main():
     """Generate all requested frozen CFM dataset splits."""
     args = parse_args()
-    if args.batch_size != 1:
-        raise ValueError("Frozen CFM dataset generation currently saves one scene per .pt file; use --batch_size 1.")
-
     device_name = args.device if args.device is not None else ('cuda:0' if torch.cuda.is_available() else 'cpu')
     device = torch.device(device_name)
 
