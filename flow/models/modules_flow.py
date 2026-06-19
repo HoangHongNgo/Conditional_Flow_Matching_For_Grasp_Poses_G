@@ -7,21 +7,15 @@ from libs.pointnet2.pointnet2_utils import QueryAndGroup
 from models.modules_economicgrasp import AttentionModule
 
 class Sphere_Grouping_Global_Interaction(nn.Module):
-    """
-    Groups features in a local spherical neighborhood using QueryAndGroup
-    and models global interaction using Self-Attention.
-    """
-    def __init__(self, nsample, seed_feature_dim, sphere_radius=0.05):
-        """
-        Initialize the Sphere_Grouping_Global_Interaction module.
+    """Group seed features in a 5mm sphere and model local global interaction."""
+
+    def __init__(self, nsample, seed_feature_dim, sphere_radius=0.005):
+        """Initialize spherical grouping around each graspable seed point.
 
         Args:
-            nsample (int): Maximum number of features to gather in the sphere.
-            seed_feature_dim (int): Dimension of the input seed features.
-            sphere_radius (float): Radius of the sphere for grouping.
-            
-        Returns:
-            None
+            nsample (int): Maximum number of neighbor points sampled per seed.
+            seed_feature_dim (int): Channel dimension of seed features.
+            sphere_radius (float): Ball-query radius in meters. Defaults to 5mm.
         """
         super().__init__()
         self.nsample = nsample
@@ -32,54 +26,36 @@ class Sphere_Grouping_Global_Interaction(nn.Module):
 
         self.grouper = QueryAndGroup(radius=sphere_radius, nsample=nsample, use_xyz=True, normalize_xyz=True)
         self.mlps = pt_utils.SharedMLP(mlps, bn=True)
-        
-        # Local interaction module
+        # Local interaction module, mirroring Cylinder_Grouping_Global_Interaction.
         self.local_interaction_module = AttentionModule(dim=3 + 256, n_head=1, msa_dropout=0.05)
         self.mlps2 = pt_utils.SharedMLP(mlps2, bn=True)
 
     def forward(self, seed_xyz_graspable, seed_features_graspable):
-        """
-        Forward pass for the Sphere Grouping.
+        """Apply spherical grouping and local self-attention to seed features.
 
         Args:
-            seed_xyz_graspable (torch.Tensor): Coordinates of the graspable seed points. Shape: [B, 1024, 3]
-            seed_features_graspable (torch.Tensor): Features of the graspable seed points. Shape: [B, C, 1024] where C is seed_feature_dim.
+            seed_xyz_graspable (torch.Tensor): Graspable seed coordinates with shape [B, N, 3].
+            seed_features_graspable (torch.Tensor): Seed features with shape [B, C, N].
 
         Returns:
-            torch.Tensor: Grouped and interacted features. Shape: [B, 256, 1024]
+            torch.Tensor: Grouped and interacted seed features with shape [B, 256, N].
         """
-        # [B, 3, 1024, nsample]
+        # [B, 3, N, nsample]
         coords = seed_xyz_graspable.transpose(-1, -2).unsqueeze(-1).expand(-1, -1, -1, self.nsample)
-        
-        # Group features using QueryAndGroup (spherical neighborhood)
-        # [B, 3 + C, 1024, nsample]
+
+        # Ball query gathers neighbors within sphere_radius around each seed point.
+        # [B, 3 + C, N, nsample]
         grouped_feature = self.grouper(seed_xyz_graspable, seed_xyz_graspable, seed_features_graspable)
-        
-        # [B, 256, 1024, nsample]
         new_features = self.mlps(grouped_feature)
-        
-        # Concatenate coordinates and prepare for AttentionModule
-        # [B * 1024, nsample, 256 + 3]
+
+        # [B * N, nsample, 256 + 3]
         new_features = torch.cat([new_features, coords], dim=1).permute(0, 2, 3, 1).contiguous().view(-1, self.nsample, 256 + 3)
-        
-        # Apply Self-Attention for local interaction
-        # [B * 1024, nsample, 256 + 3]
         new_features = self.local_interaction_module(new_features, new_features, new_features, mask=None)
-        
-        # Reshape back to feature maps
-        # [B, 256 + 3, 1024, nsample]
+
+        # [B, 256 + 3, N, nsample]
         new_features = new_features.view(seed_xyz_graspable.shape[0], seed_xyz_graspable.shape[1], self.nsample, 3 + 256).permute(0, 3, 1, 2).contiguous()
-        
-        # Process through the second MLP
-        # [B, 256, 1024, nsample]
         new_features = self.mlps2(new_features)
-        
-        # Extract features with Max-Pooling across the nsample dimension
-        # [B, 256, 1024, 1]
         new_features = F.max_pool2d(new_features, kernel_size=[1, new_features.size(3)])
-        
-        # Squeeze the last dimension
-        # [B, 256, 1024]
         new_features = new_features.squeeze(-1)
-        
+
         return new_features
