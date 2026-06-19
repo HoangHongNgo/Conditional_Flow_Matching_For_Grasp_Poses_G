@@ -5,43 +5,6 @@ description: Best practices for PyTorch deep learning code in EconomicGrasp
 
 # PyTorch Deep Learning Patterns
 
-## Model Development
-
-### Adding a New Model Variant
-
-1. Define the class in `models/economicgrasp.py`:
-```python
-class my_new_model(nn.Module):
-    def __init__(self, cylinder_radius=0.05, seed_feat_dim=512, is_training=True, voxel_size=0.005):
-        super().__init__()
-        self.is_training = is_training
-        # ... define layers
-    
-    def forward(self, end_points):
-        # Process through pipeline, store results in end_points
-        return end_points
-```
-
-2. Register in `train.py` and `test.py` model selection:
-```python
-if cfgs.model == 'my_new_model':
-    net = my_new_model(seed_feat_dim=512, is_training=True)
-```
-
-### Adding a New Module
-
-Add to `models/modules_economicgrasp.py`:
-- Inherit from `nn.Module`
-- Use `SharedMLP` for multi-layer conv blocks
-- Maintain `[B, C, N]` tensor layout for conv layers
-- Pass and update `end_points` dict
-
-### Adding a New Loss Term
-
-1. Add loss computation in `models/loss_economicgrasp.py`
-2. Add weight argument in `utils/arguments.py`: `--my_loss_weight`
-3. Sum weighted loss in `get_loss()` function
-
 ## GPU Memory Management
 
 ```python

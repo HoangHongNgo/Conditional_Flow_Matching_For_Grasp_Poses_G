@@ -1,0 +1,4 @@
+interface:
+  display_name: "Code Prompt Generation"
+  short_description: "Turn repo context into codegen prompts"
+  default_prompt: "Use $code-prompt-generation to inspect this workspace, ask only the missing clarifications, and produce a complete code-generation prompt."

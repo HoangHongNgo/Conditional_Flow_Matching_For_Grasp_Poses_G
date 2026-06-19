@@ -69,6 +69,7 @@ cfm_generation.log
 Loading
 
 # Generated evaluation artifacts
+doc/
 doc/test_cfm_outputs_seen/
 doc/test_cfm_outputs_seen_realsense/
 doc/test_flow_outputs/

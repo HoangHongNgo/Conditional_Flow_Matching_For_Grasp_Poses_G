@@ -202,6 +202,22 @@ def log_SO3(R):
     return w_mat
 
 
+def rotation_matrix_to_lie_vector(R):
+    """
+    Convert batched SO(3) rotation matrices to Lie vectors.
+
+    Args:
+        R (torch.Tensor): Valid rotation matrices with shape [N, 3, 3].
+
+    Returns:
+        torch.Tensor: Lie vectors with shape [N, 3].
+    """
+    w_mat = log_SO3(R)  # [N, 3, 3]
+    w_vec = bracket_so3(w_mat)  # [N, 3]
+
+    return w_vec
+
+
 def log_SE3(T):
     """
     Map a batch of SE(3) transforms to se(3) matrix representation.
