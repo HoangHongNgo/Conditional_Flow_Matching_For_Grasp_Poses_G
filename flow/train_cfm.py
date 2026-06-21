@@ -3,7 +3,6 @@ import os
 import argparse
 from datetime import datetime
 import torch
-import torch.nn as nn
 from torch.utils.data import DataLoader, random_split
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from tqdm import tqdm
@@ -24,21 +23,21 @@ from torchcfm.conditional_flow_matching import (
 
 def sample_masked_flow(FM, x0, x1, target_valid_mask):
     """Sample CFM locations and velocities while ignoring invalid seed targets."""
-    B, _, _ = x1.shape
+    B, M, _ = x1.shape
     xt = torch.zeros_like(x1)  # [B, 1024, 5]
     ut = torch.zeros_like(x1)  # [B, 1024, 5]
-    t_batch = torch.zeros(B, device=x1.device)  # [B]
+    t_seed = torch.zeros(B, M, device=x1.device, dtype=x1.dtype)  # [B, 1024]
 
     for b in range(B):
         valid_idx = torch.where(target_valid_mask[b])[0]  # [num_valid]
         if valid_idx.numel() == 0:
             continue
         t_val, xt_b, ut_b = FM.sample_location_and_conditional_flow(x0[b, valid_idx], x1[b, valid_idx])
+        t_seed[b, valid_idx] = t_val
         xt[b, valid_idx] = xt_b
         ut[b, valid_idx] = ut_b
-        t_batch[b] = t_val[0]
 
-    return t_batch, xt, ut
+    return t_seed, xt, ut
 
 
 def build_flow_matcher(fm_type, sigma):
@@ -237,7 +236,7 @@ if __name__ == '__main__':
                         help='Path to normalization stats')
     parser.add_argument('--checkpoint_dir', type=str, default='flow/results',
                         help='Directory to save model checkpoints')
-    parser.add_argument('--batch_size', type=str, default=16, help='Training batch size')
+    parser.add_argument('--batch_size', type=int, default=16, help='Training batch size')
     parser.add_argument('--epochs', type=int, default=20, help='Number of epochs to train')
     parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate')
     parser.add_argument('--weight_decay', type=float, default=1e-4, help='Weight decay')
@@ -253,8 +252,6 @@ if __name__ == '__main__':
     )
     parser.add_argument('--fm_sigma', type=float, default=0.0, help='Conditional flow matcher sigma')
     
-    # Parse args (ensure batch_size is parsed as int)
     args = parser.parse_args()
-    args.batch_size = int(args.batch_size)
     
     train_cfm(args)

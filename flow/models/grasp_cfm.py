@@ -6,8 +6,6 @@ import numpy as np
 from models.backbone import TDUnet
 from models.modules_economicgrasp import GraspableNet
 from libs.pointnet2.pointnet2_utils import furthest_point_sample, gather_operation
-from utils.arguments import cfgs
-
 
 class SinusoidalPosEmb(nn.Module):
     """Encode scalar timesteps with sinusoidal positional embeddings."""
@@ -87,7 +85,8 @@ class GraspVelocityMLP(nn.Module):
 
         Args:
             x_t (torch.Tensor): Noisy grasp targets with shape [B, M, 5].
-            t (torch.Tensor): Flow time with shape [B] or [B, 1].
+            t (torch.Tensor): Flow time with shape [B], [B, 1], [B, M],
+                or [B, M, 1].
             seed_cond (torch.Tensor): Per-target seed features with shape [B, M, 128].
 
         Returns:
@@ -98,12 +97,20 @@ class GraspVelocityMLP(nn.Module):
             f"seed_cond must have shape [B, M, C], got {tuple(seed_cond.shape)}"
         )
         
-        # Reshape time variable to [B, 1]
         if t.ndim == 1:
-            t = t.unsqueeze(-1)
-            
-        # Broadcast time and flatten per-seed condition for all sampled seeds.
-        t_flat = t.unsqueeze(1).repeat(1, M, 1).reshape(B * M, 1)  # [B * M, 1]
+            t_flat = t[:, None, None].expand(B, M, 1).reshape(B * M, 1)
+        elif t.ndim == 2 and t.shape[1] == 1:
+            t_flat = t[:, None, :].expand(B, M, 1).reshape(B * M, 1)
+        elif t.ndim == 2 and t.shape == (B, M):
+            t_flat = t.reshape(B * M, 1)
+        elif t.ndim == 3 and t.shape[:2] == (B, M) and t.shape[2] == 1:
+            t_flat = t.reshape(B * M, 1)
+        else:
+            raise ValueError(
+                f"t must have shape [B], [B, 1], [B, M], or [B, M, 1], got {tuple(t.shape)}"
+            )
+
+        # Flatten per-seed condition for all sampled seeds.
         cond_flat = seed_cond.reshape(B * M, -1)  # [B * M, 128]
         x_t_flat = x_t.reshape(B * M, D)  # [B * M, 5]
 
@@ -140,9 +147,12 @@ class economic_graspable(nn.Module):
             None
         """
         super().__init__()
+        from utils.arguments import cfgs
+
         self.is_training = is_training
         self.seed_feature_dim = seed_feat_dim
         self.M_points = cfgs.m_point
+        self.graspness_threshold = cfgs.graspness_threshold
         self.voxel_size = voxel_size
 
         # Backbone
@@ -214,7 +224,7 @@ class economic_graspable(nn.Module):
         # [B, N]
         objectness_pred = torch.argmax(objectness_score, 1)
         objectness_mask = (objectness_pred == 1)
-        graspness_mask = graspness_score > cfgs.graspness_threshold
+        graspness_mask = graspness_score > self.graspness_threshold
         graspable_mask = objectness_mask & graspness_mask
 
         # Generate the downsample point (1024 per scene) using the furthest point sampling

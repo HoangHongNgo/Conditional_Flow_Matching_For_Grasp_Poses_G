@@ -6,7 +6,6 @@ import torch.nn as nn
 from libs.pointnet2.pointnet2_modules import PointnetSAModuleVotes, PointnetFPModule
 import MinkowskiEngine as ME
 from MinkowskiEngine.modules.resnet_block import BasicBlock, Bottleneck
-from utils.arguments import cfgs
 
 class ResNetBase(nn.Module):
     BLOCK = None

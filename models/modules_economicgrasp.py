@@ -8,7 +8,6 @@ import pdb
 import libs.pointnet2.pytorch_utils as pt_utils
 from libs.pointnet2.pointnet2_utils import CylinderQueryAndGroup, QueryAndGroup
 from utils.loss_utils import generate_grasp_views, batch_viewpoint_params_to_matrix
-from utils.arguments import cfgs
 
 
 class GraspableNet(nn.Module):
