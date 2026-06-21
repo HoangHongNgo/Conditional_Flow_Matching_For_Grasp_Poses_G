@@ -100,7 +100,7 @@ def train_cfm(args):
         seed_feature_dim=512,
         sphere_radius=args.sphere_radius,
     ).to(device)
-    mlp = GraspVelocityMLP(grasp_dim=5, cond_dim=256).to(device)
+    mlp = GraspVelocityMLP(grasp_dim=5, cond_dim=128).to(device)
     
     # Optimizer & Scheduler
     params = list(seed_conditioner.parameters()) + list(mlp.parameters())
@@ -143,7 +143,7 @@ def train_cfm(args):
             t_batch, xt, ut = sample_masked_flow(FM, x0, x1, target_valid_mask)
             
             # Encode local seed geometry and gather per-seed condition.
-            seed_cond = seed_conditioner(seed_xyz, seed_feats).transpose(1, 2).contiguous()  # [B, 1024, 256]
+            seed_cond = seed_conditioner(seed_xyz, seed_feats).transpose(1, 2).contiguous()  # [B, 1024, 128]
             
             # Predict velocity
             v_pred = mlp(xt, t_batch, seed_cond)  # [B, 1024, 5]

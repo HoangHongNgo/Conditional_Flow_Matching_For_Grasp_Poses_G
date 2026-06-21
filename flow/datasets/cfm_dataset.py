@@ -54,10 +54,11 @@ class CFMDataset(Dataset):
         seed_valid_mask = data['seed_valid_mask'].squeeze(0).bool()  # [N]
         num_seed = seed_xyz_all.shape[0]
 
-        rot_pools = data['seed_grasp_rot_lie_list'][0]
-        width_pools = data['seed_grasp_width_list'][0]
-        depth_pools = data['seed_grasp_depth_list'][0]
-        score_pools = data['seed_grasp_score_list'][0]
+        rot_pools = data['seed_grasp_rot_lie'].squeeze(0).float()  # [N, K, 3]
+        width_pools = data['seed_grasp_width'].squeeze(0).float()  # [N, K]
+        depth_pools = data['seed_grasp_depth'].squeeze(0).float()  # [N, K]
+        score_pools = data['seed_grasp_score'].squeeze(0).float()  # [N, K]
+        grasp_count = data['seed_grasp_count'].squeeze(0).long()  # [N]
 
         x1_raw = torch.zeros((num_seed, 5), dtype=torch.float32)  # [N, 5]
         sampled_scores = torch.zeros((num_seed,), dtype=torch.float32)  # [N]
@@ -65,13 +66,14 @@ class CFMDataset(Dataset):
             if not seed_valid_mask[seed_idx]:
                 continue
 
-            scores = score_pools[seed_idx].float()  # [Ki]
+            valid_count = int(grasp_count[seed_idx].item())
+            scores = score_pools[seed_idx, :valid_count]  # [Ki]
             probs = scores / scores.sum()
             grasp_idx = torch.multinomial(probs, num_samples=1).item()
 
-            x1_raw[seed_idx, :3] = rot_pools[seed_idx][grasp_idx].float()  # [3]
-            x1_raw[seed_idx, 3] = width_pools[seed_idx][grasp_idx].float()
-            x1_raw[seed_idx, 4] = depth_pools[seed_idx][grasp_idx].float()
+            x1_raw[seed_idx, :3] = rot_pools[seed_idx, grasp_idx]  # [3]
+            x1_raw[seed_idx, 3] = width_pools[seed_idx, grasp_idx]
+            x1_raw[seed_idx, 4] = depth_pools[seed_idx, grasp_idx]
             sampled_scores[seed_idx] = scores[grasp_idx].float()
 
         if self.stats is not None:

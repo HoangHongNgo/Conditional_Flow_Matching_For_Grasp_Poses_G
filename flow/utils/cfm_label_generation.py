@@ -9,9 +9,9 @@ from utils.loss_utils import (batch_viewpoint_params_to_matrix, transform_point_
 from utils.arguments import cfgs
 from flow.utils.lie import rotation_matrix_to_lie_vector
 
-def process_grasp_labels(end_points):
+def process_grasp_labels(end_points, max_k=192):
     """
-    Build seed-level ragged grasp pools for seed-conditioned 5D CFM.
+    Build padded seed-level grasp pools for seed-conditioned 5D CFM.
 
     For each seed point, this function keeps every grasp configuration whose
     grasp point is within 5mm and whose normalized score is greater than 0.7.
@@ -30,13 +30,16 @@ def process_grasp_labels(end_points):
             - 'grasp_scores_list': List of length B, containing lists of object grasp scores [P, 300].
             - 'grasp_widths_list': List of length B, containing lists of object grasp widths [P, 300].
             - 'top_view_index_list': List of length B, containing lists of object top view indices [P, 300].
+            max_k (int): Maximum number of grasp configs kept per seed after padding.
         
     Returns:
-        dict: The input dictionary updated with seed-level ragged lists:
-            - 'seed_grasp_rot_lie_list': List[B][N] of tensors with shape [Ki, 3].
-            - 'seed_grasp_width_list': List[B][N] of tensors with shape [Ki].
-            - 'seed_grasp_depth_list': List[B][N] of tensors with shape [Ki], in meters.
-            - 'seed_grasp_score_list': List[B][N] of tensors with shape [Ki].
+        dict: The input dictionary updated with padded seed-level tensors:
+            - 'seed_grasp_rot_lie': Tensor with shape [B, N, K, 3].
+            - 'seed_grasp_width': Tensor with shape [B, N, K].
+            - 'seed_grasp_depth': Tensor with shape [B, N, K], in meters.
+            - 'seed_grasp_score': Tensor with shape [B, N, K].
+            - 'seed_grasp_slot_mask': Boolean tensor with shape [B, N, K].
+            - 'seed_grasp_count': Long tensor with shape [B, N].
             - 'seed_valid_mask': Boolean tensor with shape [B, N].
     """
     seed_xyzs = end_points['xyz_graspable']  # [B, 1024, 3]
@@ -45,11 +48,12 @@ def process_grasp_labels(end_points):
     
     DIST_THRESH = 0.005  # 5mm
     SCORE_THRESH = 0.7
-
-    seed_grasp_rot_lie_list = []
-    seed_grasp_width_list = []
-    seed_grasp_depth_list = []
-    seed_grasp_score_list = []
+    seed_grasp_rot_lie = torch.zeros((B, num_seed, max_k, 3), dtype=torch.float32, device=device)  # [B, N, K, 3]
+    seed_grasp_width = torch.zeros((B, num_seed, max_k), dtype=torch.float32, device=device)  # [B, N, K]
+    seed_grasp_depth = torch.zeros((B, num_seed, max_k), dtype=torch.float32, device=device)  # [B, N, K]
+    seed_grasp_score = torch.zeros((B, num_seed, max_k), dtype=torch.float32, device=device)  # [B, N, K]
+    seed_grasp_slot_mask = torch.zeros((B, num_seed, max_k), dtype=torch.bool, device=device)  # [B, N, K]
+    seed_grasp_count = torch.zeros((B, num_seed), dtype=torch.long, device=device)  # [B, N]
     seed_valid_mask = torch.zeros((B, num_seed), dtype=torch.bool, device=device)  # [B, N]
 
     for b in range(B):
@@ -63,11 +67,6 @@ def process_grasp_labels(end_points):
         grasp_widths_merged = []
         grasp_views_rot_merged = []
         top_view_index_merged = []
-
-        scene_rot_lie_list = []
-        scene_width_list = []
-        scene_depth_list = []
-        scene_score_list = []
         
         # 1. Merge all object GT labels into scene coordinate
         for obj_idx, pose in enumerate(poses):
@@ -114,12 +113,6 @@ def process_grasp_labels(end_points):
             grasp_views_rot_merged.append(grasp_views_rot_trans)
 
         if len(grasp_points_merged) == 0:
-            empty_vec = seed_xyz.new_zeros((0, 3))
-            empty_attr = seed_xyz.new_zeros((0,))
-            seed_grasp_rot_lie_list.append([empty_vec for _ in range(num_seed)])
-            seed_grasp_width_list.append([empty_attr for _ in range(num_seed)])
-            seed_grasp_depth_list.append([empty_attr for _ in range(num_seed)])
-            seed_grasp_score_list.append([empty_attr for _ in range(num_seed)])
             continue
             
         grasp_points_merged = torch.cat(grasp_points_merged, dim=0)  # [M, 3]
@@ -139,10 +132,6 @@ def process_grasp_labels(end_points):
             in_radius = dists[s_idx] <= DIST_THRESH  # [M]
             
             if in_radius.sum() == 0:
-                scene_rot_lie_list.append(seed_xyz.new_zeros((0, 3)))
-                scene_width_list.append(seed_xyz.new_zeros((0,)))
-                scene_depth_list.append(seed_xyz.new_zeros((0,)))
-                scene_score_list.append(seed_xyz.new_zeros((0,)))
                 continue
             
             # Extract indices of neighbor GT points
@@ -157,10 +146,6 @@ def process_grasp_labels(end_points):
             
             num_valid = valid_slots.sum().item()
             if num_valid == 0:
-                scene_rot_lie_list.append(seed_xyz.new_zeros((0, 3)))
-                scene_width_list.append(seed_xyz.new_zeros((0,)))
-                scene_depth_list.append(seed_xyz.new_zeros((0,)))
-                scene_score_list.append(seed_xyz.new_zeros((0,)))
                 continue
                 
             # Get exact (m, v) indices of valid slots
@@ -184,23 +169,35 @@ def process_grasp_labels(end_points):
             full_rot = torch.matmul(views_rot, angle_rot)  # [Ki, 3, 3]
             rot_lie = rotation_matrix_to_lie_vector(full_rot)  # [Ki, 3]
             depth_meters = 0.01 + grasp_depth_merged[m_abs_idx, v_idx].float() * 0.01  # [Ki]
+            keep_count = min(num_valid, max_k)
 
-            scene_rot_lie_list.append(rot_lie)
-            scene_width_list.append(grasp_widths_merged[m_abs_idx, v_idx])  # [Ki]
-            scene_depth_list.append(depth_meters)  # [Ki]
-            scene_score_list.append(grasp_scores_merged[m_abs_idx, v_idx])  # [Ki]
+            # Sort by score so truncation keeps stronger grasp configs first.
+            scores = grasp_scores_merged[m_abs_idx, v_idx]  # [Ki]
+            if num_valid > max_k:
+                top_idx = torch.topk(scores, k=max_k, largest=True, sorted=True).indices  # [K]
+                rot_lie = rot_lie[top_idx]  # [K, 3]
+                width = grasp_widths_merged[m_abs_idx, v_idx][top_idx]  # [K]
+                depth_meters = depth_meters[top_idx]  # [K]
+                scores = scores[top_idx]  # [K]
+            else:
+                width = grasp_widths_merged[m_abs_idx, v_idx]  # [Ki]
+
+            seed_grasp_rot_lie[b, s_idx, :keep_count] = rot_lie[:keep_count]  # [keep_count, 3]
+            seed_grasp_width[b, s_idx, :keep_count] = width[:keep_count]  # [keep_count]
+            seed_grasp_depth[b, s_idx, :keep_count] = depth_meters[:keep_count]  # [keep_count]
+            seed_grasp_score[b, s_idx, :keep_count] = scores[:keep_count]  # [keep_count]
+            seed_grasp_slot_mask[b, s_idx, :keep_count] = True  # [keep_count]
+            seed_grasp_count[b, s_idx] = keep_count
             seed_valid_mask[b, s_idx] = True
 
-        seed_grasp_rot_lie_list.append(scene_rot_lie_list)
-        seed_grasp_width_list.append(scene_width_list)
-        seed_grasp_depth_list.append(scene_depth_list)
-        seed_grasp_score_list.append(scene_score_list)
-
     # 4. Pack seed-conditioned ragged targets into end_points.
-    end_points['seed_grasp_rot_lie_list'] = seed_grasp_rot_lie_list  # List[B][N] of [Ki, 3]
-    end_points['seed_grasp_width_list'] = seed_grasp_width_list  # List[B][N] of [Ki]
-    end_points['seed_grasp_depth_list'] = seed_grasp_depth_list  # List[B][N] of [Ki]
-    end_points['seed_grasp_score_list'] = seed_grasp_score_list  # List[B][N] of [Ki]
+    end_points['seed_grasp_rot_lie'] = seed_grasp_rot_lie  # [B, N, K, 3]
+    end_points['seed_grasp_width'] = seed_grasp_width  # [B, N, K]
+    end_points['seed_grasp_depth'] = seed_grasp_depth  # [B, N, K]
+    end_points['seed_grasp_score'] = seed_grasp_score  # [B, N, K]
+    end_points['seed_grasp_slot_mask'] = seed_grasp_slot_mask  # [B, N, K]
+    end_points['seed_grasp_count'] = seed_grasp_count  # [B, N]
     end_points['seed_valid_mask'] = seed_valid_mask  # [B, N]
+    end_points['seed_grasp_max_k'] = max_k
 
     return end_points

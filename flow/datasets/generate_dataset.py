@@ -18,10 +18,12 @@ from utils.arguments import cfgs
 KEEP_KEYS = {
     'xyz_graspable',
     'seed_features_graspable',
-    'seed_grasp_rot_lie_list',
-    'seed_grasp_width_list',
-    'seed_grasp_depth_list',
-    'seed_grasp_score_list',
+    'seed_grasp_rot_lie',
+    'seed_grasp_width',
+    'seed_grasp_depth',
+    'seed_grasp_score',
+    'seed_grasp_slot_mask',
+    'seed_grasp_count',
     'seed_valid_mask',
 }
 

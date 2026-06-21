@@ -18,7 +18,7 @@ def euler_solve(seed_conditioner, mlp, x0, seed_xyz, seed_feats, stats, n_steps=
     device = x0.device
     
     # 1. Compute per-seed condition.
-    seed_cond = seed_conditioner(seed_xyz, seed_feats).transpose(1, 2).contiguous()  # [B, N, 256]
+    seed_cond = seed_conditioner(seed_xyz, seed_feats).transpose(1, 2).contiguous()  # [B, N, 128]
     
     # 2. Integrate flow from t=0 to t=1
     x = x0.clone()

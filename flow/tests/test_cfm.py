@@ -140,7 +140,7 @@ def evaluate_cfm(args):
         seed_feature_dim=512,
         sphere_radius=args.sphere_radius,
     ).to(device)
-    mlp = GraspVelocityMLP(grasp_dim=5, cond_dim=256).to(device)
+    mlp = GraspVelocityMLP(grasp_dim=5, cond_dim=128).to(device)
     
     cfm_checkpoint = torch.load(args.cfm_checkpoint_path, map_location=device)
     seed_conditioner.load_state_dict(cfm_checkpoint['seed_conditioner_state_dict'])

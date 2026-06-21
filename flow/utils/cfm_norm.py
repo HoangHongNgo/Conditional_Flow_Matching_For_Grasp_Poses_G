@@ -17,7 +17,7 @@ def compute_norm_stats(dataset_dir, max_samples=100):
     for f in files:
         data = torch.load(os.path.join(dataset_dir, f), map_location='cpu')
         has_seed_conditioned_labels = has_seed_conditioned_labels or (
-            'seed_grasp_rot_lie_list' in data and 'seed_valid_mask' in data
+            'seed_grasp_rot_lie' in data and 'seed_grasp_slot_mask' in data and 'seed_valid_mask' in data
         )
 
     if not has_seed_conditioned_labels:

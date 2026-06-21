@@ -13,7 +13,7 @@
 - Assume existing uncommitted changes belong to the user. Do not overwrite, revert, reformat, stage, or commit unrelated changes.
 - Work on the current branch unless the user explicitly asks to create or switch branches.
 - Never run destructive Git commands such as `git reset --hard`, `git clean`, `git checkout --`, `git restore`, or force-push unless the user explicitly requests that exact action.
-- Do not create commits, tags, branches, or pushes unless the user explicitly asks.
+- For this project, when there are code changes to save, prefer an automatic `git add` -> `git commit` -> `git push hoanghongngo cfm` flow unless the user explicitly asks for a different Git target or workflow.
 - Keep diffs focused on the requested task. Avoid broad formatting, dependency churn, or generated-file updates unless needed for the task.
 - Before finalizing, inspect the diff for accidental changes and report files changed plus verification performed.
 
