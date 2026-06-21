@@ -79,12 +79,41 @@ class SceneMinkEncoder(nn.Module):
         return out
 
 
+class SinusoidalPosEmb(nn.Module):
+    """Encode scalar timesteps with sinusoidal positional embeddings."""
+
+    def __init__(self, dim):
+        """Initialize the sinusoidal embedding dimension."""
+        super().__init__()
+        self.dim = dim
+
+    def forward(self, x):
+        """Map timesteps with shape [B] or [B, 1] to embeddings [B, dim]."""
+        x = x.reshape(-1)
+        half_dim = self.dim // 2
+        if half_dim == 0:
+            return x.unsqueeze(-1)
+
+        device = x.device
+        dtype = x.dtype
+        emb_scale = np.log(10000) / max(half_dim - 1, 1)
+        emb = torch.exp(
+            torch.arange(half_dim, device=device, dtype=dtype) * -emb_scale
+        )
+        emb = x.unsqueeze(1) * emb.unsqueeze(0)
+        emb = torch.cat((emb.sin(), emb.cos()), dim=-1)
+
+        if self.dim % 2 == 1:
+            emb = torch.cat((emb, torch.zeros_like(emb[:, :1])), dim=-1)
+        return emb
+
+
 class GraspVelocityMLP(nn.Module):
     """
     MLP that models the conditional vector field v_theta.
     Maps [x_t, t, seed_cond] to the target flow velocity vector.
     """
-    def __init__(self, grasp_dim=5, cond_dim=256, hidden_dim=512):
+    def __init__(self, grasp_dim=5, cond_dim=128, hidden_dim=512, state_dim=128):
         """Initialize the velocity MLP for seed-conditioned CFM.
 
         Args:
@@ -92,18 +121,34 @@ class GraspVelocityMLP(nn.Module):
                 [omega(3), width(1), depth(1)].
             cond_dim (int): Per-seed condition feature dimension.
             hidden_dim (int): Hidden layer width.
+            state_dim (int): Encoded dimension for the x_t and t branches.
         """
         super().__init__()
-        in_dim = grasp_dim + 1 + cond_dim
-        
-        self.mlp = nn.Sequential(
-            nn.Linear(in_dim, hidden_dim),
-            nn.SiLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.SiLU(),
-            nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.SiLU(),
-            nn.Linear(hidden_dim // 2, grasp_dim)
+        self.grasp_dim = grasp_dim
+        self.cond_dim = cond_dim
+        self.state_dim = state_dim
+
+        self.step_encoder = nn.Sequential(
+            SinusoidalPosEmb(state_dim),
+            nn.Linear(state_dim, state_dim * 2),
+            nn.Mish(),
+            nn.Linear(state_dim * 2, state_dim),
+        )
+
+        self.sample_encoder = nn.Sequential(
+            nn.Linear(grasp_dim, state_dim),
+            nn.ReLU(),
+            nn.Linear(state_dim, state_dim),
+        )
+
+        in_dim = (2 * state_dim) + cond_dim
+
+        self.prediction_head = nn.Sequential(
+            nn.Linear(in_dim, in_dim // 2),
+            nn.ReLU(),
+            nn.Linear(in_dim // 2, in_dim // 4),
+            nn.ReLU(),
+            nn.Linear(in_dim // 4, grasp_dim),
         )
 
     def forward(self, x_t, t, seed_cond):
@@ -113,7 +158,7 @@ class GraspVelocityMLP(nn.Module):
         Args:
             x_t (torch.Tensor): Noisy grasp targets with shape [B, M, 5].
             t (torch.Tensor): Flow time with shape [B] or [B, 1].
-            seed_cond (torch.Tensor): Per-target seed features with shape [B, M, 256].
+            seed_cond (torch.Tensor): Per-target seed features with shape [B, M, 128].
 
         Returns:
             torch.Tensor: Predicted velocity with shape [B, M, 5].
@@ -129,11 +174,16 @@ class GraspVelocityMLP(nn.Module):
             
         # Broadcast time and flatten per-seed condition for all sampled seeds.
         t_flat = t.unsqueeze(1).repeat(1, M, 1).reshape(B * M, 1)  # [B * M, 1]
-        cond_flat = seed_cond.reshape(B * M, -1)  # [B * M, 256]
+        cond_flat = seed_cond.reshape(B * M, -1)  # [B * M, 128]
         x_t_flat = x_t.reshape(B * M, D)  # [B * M, 5]
-        
-        inp = torch.cat([x_t_flat, t_flat, cond_flat], dim=-1)  # [B * M, 262]
-        v_flat = self.mlp(inp)  # [B * M, 5]
+
+        # Shape: [B * M, state_dim]
+        step_feat = self.step_encoder(t_flat)
+        # Shape: [B * M, state_dim]
+        sample_feat = self.sample_encoder(x_t_flat)
+
+        fused_feat = torch.cat([sample_feat, step_feat, cond_flat], dim=-1)
+        v_flat = self.prediction_head(fused_feat)  # [B * M, 5]
         
         v = v_flat.reshape(B, M, D)
         return v
