@@ -15,7 +15,11 @@ from flow.datasets.cfm_dataset import CFMDataset
 from flow.models.grasp_cfm import GraspVelocityMLP
 from flow.models.modules_flow import Sphere_Grouping_Global_Interaction
 from flow.utils.cfm_norm import compute_norm_stats
-from torchcfm.conditional_flow_matching import ExactOptimalTransportConditionalFlowMatcher
+from torchcfm.conditional_flow_matching import (
+    ConditionalFlowMatcher,
+    ExactOptimalTransportConditionalFlowMatcher,
+    TargetConditionalFlowMatcher,
+)
 
 
 def sample_masked_flow(FM, x0, x1, target_valid_mask):
@@ -35,6 +39,16 @@ def sample_masked_flow(FM, x0, x1, target_valid_mask):
         t_batch[b] = t_val[0]
 
     return t_batch, xt, ut
+
+
+def build_flow_matcher(fm_type, sigma):
+    """Build a torchcfm flow matcher from a short experiment-friendly name."""
+    matcher_by_type = {
+        'target': TargetConditionalFlowMatcher,
+        'independent': ConditionalFlowMatcher,
+        'ot': ExactOptimalTransportConditionalFlowMatcher,
+    }
+    return matcher_by_type[fm_type](sigma=sigma)
 
 
 def masked_mse_loss(v_pred, ut, target_valid_mask):
@@ -107,8 +121,9 @@ def train_cfm(args):
     optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=args.weight_decay)
     scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs)
     
-    # Initialize torchcfm Exact Optimal Transport Flow Matcher
-    FM = ExactOptimalTransportConditionalFlowMatcher(sigma=0.0)
+    # Target CFM keeps each seed-conditioned target paired with its own seed.
+    FM = build_flow_matcher(args.fm_type, args.fm_sigma)
+    print(f"Using torchcfm matcher: {args.fm_type} (sigma={args.fm_sigma})")
     
     # Create checkpoints directory & log file
     os.makedirs(args.checkpoint_dir, exist_ok=True)
@@ -229,6 +244,14 @@ if __name__ == '__main__':
     parser.add_argument('--limit', type=int, default=None, help='Limit dataset size')
     parser.add_argument('--nsample', type=int, default=32, help='Number of neighbor seeds for spherical grouping')
     parser.add_argument('--sphere_radius', type=float, default=0.005, help='Seed grouping radius in meters')
+    parser.add_argument(
+        '--fm_type',
+        type=str,
+        default='target',
+        choices=['target', 'independent', 'ot'],
+        help='torchcfm matcher: target is recommended for seed-conditioned grasp CFM'
+    )
+    parser.add_argument('--fm_sigma', type=float, default=0.0, help='Conditional flow matcher sigma')
     
     # Parse args (ensure batch_size is parsed as int)
     args = parser.parse_args()
