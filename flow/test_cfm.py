@@ -104,7 +104,7 @@ def build_scoring_model(args, device):
         input_dim=int(ckpt_args.get('input_dim', args.scoring_input_dim)),
         num_classes=int(ckpt_args.get('num_classes', args.scoring_num_classes)),
         hidden_dim=int(ckpt_args.get('hidden_dim', args.scoring_hidden_dim)),
-        dropout=0.0,
+        dropout=float(ckpt_args.get('dropout', args.scoring_dropout)),
     ).to(device)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
@@ -357,6 +357,7 @@ def parse_args():
     parser.add_argument('--scoring_input_dim', type=int, default=133, help='Fallback scoring-model input dimension.')
     parser.add_argument('--scoring_num_classes', type=int, default=11, help='Fallback scoring-model class count.')
     parser.add_argument('--scoring_hidden_dim', type=int, default=256, help='Fallback scoring-model hidden dimension.')
+    parser.add_argument('--scoring_dropout', type=float, default=0.1, help='Fallback scoring-model dropout.')
     parser.add_argument('--smoke_test', action='store_true', help='Run a short inference-only smoke test.')
     args, _ = parser.parse_known_args()
     return args
