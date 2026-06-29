@@ -249,27 +249,27 @@ class GraspNetDataset(Dataset):
         ret_dict['coordinates_for_voxel'] = cloud_sampled.astype(np.float32) / self.voxel_size
         # [scene_points, 3 (coords)]
         ret_dict['graspness_label'] = graspness_sampled.astype(np.float32)
-        # [scene_points, 1 (graspness)]
+        # [scene_points] (graspness)
         ret_dict['objectness_label'] = objectness_label.astype(np.int64)
-        # [scene_points, 1 (objectness)]
+        # [scene_points] (objectness, binary 0/1)
         ret_dict['segmentation_label'] = segmentation_label.astype(np.int64)
-        # [scene_points, 1 (objectness)]
+        # [scene_points] (segmentation, object class id)
         ret_dict['object_poses_list'] = object_poses_list
-        # list has a length of objects amount, each has size [3, 4] (pose matrix)
+        # list of length num_objects, each [3, 4] (pose matrix)
         ret_dict['grasp_points_list'] = grasp_points_list
-        # list has a length of objects amount, each has size [object_points, 3 (coordinate)]
+        # list of length num_objects, each [object_points, 3] (coordinate)
         ret_dict['grasp_rotations_list'] = grasp_rotations_list
-        # list has a length of objects amount, each has size [object_points, 60 (view)]
+        # list of length num_objects, each [object_points, 300] (best in-plane angle index per view)
         ret_dict['grasp_depth_list'] = grasp_depth_list
-        # list has a length of objects amount, each has size [object_points, 60 (view)]
+        # list of length num_objects, each [object_points, 300] (best depth index per view)
         ret_dict['grasp_widths_list'] = grasp_widths_list
-        # list has a length of objects amount, each has size [object_points, 60 (view)]
+        # list of length num_objects, each [object_points, 300] (grasp width per view, in meters)
         ret_dict['grasp_scores_list'] = grasp_scores_list
-        # list has a length of objects amount, each has size [object_points, 60 (view)]
+        # list of length num_objects, each [object_points, 300] (grasp score per view)
         ret_dict['view_graspness_list'] = view_graspness_list
-        # list has a length of objects amount, each has size [object_points, 300 (view graspness)]
+        # list of length num_objects, each [object_points, 300] (normalized view graspness)
         ret_dict['top_view_index_list'] = top_view_index_list
-        # list has a length of objects amount, each has size [object_points, top views index]
+        # list of length num_objects, each [object_points, 300] (top view indices into original 300 views)
 
         return ret_dict
 

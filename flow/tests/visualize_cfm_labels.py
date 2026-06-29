@@ -15,6 +15,39 @@ from flow.utils.cfm_label_generation import process_grasp_labels
 from models.economicgrasp import economicgrasp
 from utils.arguments import cfgs
 
+
+def build_graspgroup_from_seed_configs(seed_points, rot_matrices, widths, depths_raw, scores, valid_mask):
+    """Build a GraspGroup from all valid grasp configs attached to seed points."""
+    N, K = valid_mask.shape
+    seed_points_expanded = seed_points[:, None, :].expand(N, K, 3)  # [1024, K, 3]
+
+    valid_p = seed_points_expanded[valid_mask]  # [M, 3]
+    valid_rot_matrices = rot_matrices[valid_mask]  # [M, 3, 3]
+    valid_w = widths[valid_mask]  # [M]
+    valid_d_raw = depths_raw[valid_mask]  # [M]
+    valid_score = scores[valid_mask]  # [M]
+
+    num_grasp = valid_p.shape[0]
+    if num_grasp == 0:
+        return GraspGroup(np.zeros((0, 17), dtype=np.float32))
+
+    valid_d = torch.clamp(valid_d_raw.float() * 0.01, min=0.01, max=0.04)  # [M]
+    rot_flat = valid_rot_matrices.reshape(num_grasp, 9)  # [M, 9]
+    grasp_height = 0.02 * torch.ones_like(valid_score)  # [M]
+    obj_ids = -1 * torch.ones_like(valid_score)  # [M]
+
+    gg_preds = torch.cat([
+        valid_score.view(-1, 1),
+        valid_w.view(-1, 1),
+        grasp_height.view(-1, 1),
+        valid_d.view(-1, 1),
+        rot_flat,
+        valid_p,
+        obj_ids.view(-1, 1),
+    ], dim=-1).numpy()
+    return GraspGroup(gg_preds)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Script hiển thị ground truth grasp labels cho CFM")
     parser.add_argument('--dataset_root', type=str, default='/media/dsp520/Grasp_2T/graspnet', 
@@ -89,6 +122,18 @@ def main():
     valid_mask = end_points_cfm['batch_valid_mask'][0].cpu() # [1024, 128]
 
     print(f"Tổng số valid grasp configs trong pool: {valid_mask.sum().item()}")
+
+    gg_all_seed_grasps = build_graspgroup_from_seed_configs(
+        seed_points,
+        target_rot_matrices,
+        target_w,
+        target_d_raw,
+        target_score,
+        valid_mask,
+    )
+    all_seed_grasp_geoms = gg_all_seed_grasps.to_open3d_geometry_list()
+    for geom in all_seed_grasp_geoms:
+        geom.paint_uniform_color([1.0, 0.45, 0.0]) # Orange
 
     # 3. Lấy mẫu 1 grasp cho mỗi seed point (giống hệt khi train)
     print("Sampling 1 grasp hợp lệ cho mỗi seed point...")
@@ -173,6 +218,14 @@ def main():
     
     # Hiển thị cửa sổ thứ hai: Có point cloud, seed points (xanh lá), và target grasps (xanh dương)
     o3d.visualization.draw_geometries([cloud] + seed_geoms + target_geoms, window_name=f"CFM Labels (Blue Grasps) - Scene {args.scene_id:04d}")
+
+    print("\n--- Mở cửa sổ Open3D hiển thị toàn bộ grasp của 1024 seed points (Orange) ---")
+
+    # Show every valid grasp config attached to the 1024 seed points.
+    o3d.visualization.draw_geometries(
+        [cloud] + seed_geoms + all_seed_grasp_geoms,
+        window_name=f"All CFM Label Grasps for 1024 Seeds (Orange) - Scene {args.scene_id:04d}",
+    )
 
 if __name__ == '__main__':
     main()

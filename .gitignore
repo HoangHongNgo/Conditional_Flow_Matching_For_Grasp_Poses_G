@@ -67,6 +67,7 @@ log/
 *.log
 cfm_generation.log
 Loading
+dump_cfm/
 
 # Generated evaluation artifacts
 doc/
@@ -105,6 +106,7 @@ runs/
 # Local tooling and agent state
 /.codex-local/
 /codex-desktop-linux/
+/.agents/skills/pytorch-patterns/
 
 # ==========================
 # Other

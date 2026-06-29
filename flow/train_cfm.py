@@ -3,7 +3,7 @@ import os
 import argparse
 from datetime import datetime
 import torch
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from tqdm import tqdm
 
@@ -13,7 +13,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from flow.datasets.cfm_dataset import CFMDataset
 from flow.models.grasp_cfm import GraspVelocityMLP
 from flow.models.modules_flow import Sphere_Grouping_Global_Interaction
-from flow.utils.cfm_norm import compute_norm_stats
+from flow.utils.cfm_norm import build_norm_metadata
 from torchcfm.conditional_flow_matching import (
     ConditionalFlowMatcher,
     ExactOptimalTransportConditionalFlowMatcher,
@@ -50,9 +50,25 @@ def build_flow_matcher(fm_type, sigma):
     return matcher_by_type[fm_type](sigma=sigma)
 
 
-def masked_mse_loss(v_pred, ut, target_valid_mask):
-    """Compute MSE over valid seed targets only."""
-    per_seed_loss = ((v_pred - ut) ** 2).mean(dim=-1)  # [B, 1024]
+def masked_weighted_mse_loss(
+    v_pred,
+    ut,
+    target_valid_mask,
+    rot_weight=1.0,
+    width_weight=1.0,
+    depth_weight=1.0,
+):
+    """Compute weighted group MSE over valid seed targets only."""
+    sq_error = (v_pred - ut) ** 2  # [B, 1024, 5]
+    rot_loss = sq_error[..., :3].mean(dim=-1)  # [B, 1024]
+    width_loss = sq_error[..., 3]  # [B, 1024]
+    depth_loss = sq_error[..., 4]  # [B, 1024]
+    weight_sum = rot_weight + width_weight + depth_weight
+    per_seed_loss = (
+        rot_weight * rot_loss +
+        width_weight * width_loss +
+        depth_weight * depth_loss
+    ) / max(weight_sum, 1e-8)
     mask = target_valid_mask.float()  # [B, 1024]
     return (per_seed_loss * mask).sum() / mask.sum().clamp_min(1.0)
 
@@ -60,29 +76,42 @@ def masked_mse_loss(v_pred, ut, target_valid_mask):
 def train_cfm(args):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using training device: {device}")
+
+    resume_checkpoint_path = args.resume_checkpoint
+    resume_mode = bool(resume_checkpoint_path)
+    start_epoch = 1
+    final_epoch = args.epochs
+    resume_payload = None
+
+    if resume_mode:
+        args.checkpoint_dir = os.path.dirname(os.path.abspath(resume_checkpoint_path))
+        print(f"Resuming CFM training from: {resume_checkpoint_path}")
+        print(f"Logs and checkpoints will continue in: {args.checkpoint_dir}")
+    else:
+        # Subfolder named with date-month-year and hour-minute-second of execution
+        run_id = datetime.now().strftime("%d-%m-%Y_%H-%M-%S")
+        args.checkpoint_dir = os.path.join(args.checkpoint_dir, run_id)
+        print(f"Logs and checkpoints will be saved to: {args.checkpoint_dir}")
     
-    # Subfolder named with date-month-year and hour-minute-second of execution
-    run_id = datetime.now().strftime("%d-%m-%Y_%H-%M-%S")
-    args.checkpoint_dir = os.path.join(args.checkpoint_dir, run_id)
-    print(f"Logs and checkpoints will be saved to: {args.checkpoint_dir}")
-    
-    # 1. Ensure Norm Stats exist
+    # 1. Ensure fixed normalization metadata exists
     if not os.path.exists(args.stats_path):
         os.makedirs(os.path.dirname(args.stats_path), exist_ok=True)
-        stats = compute_norm_stats(args.dataset_dir)
-        torch.save(stats, args.stats_path)
-        print(f"Computed and saved normalization stats to: {args.stats_path}")
+        norm_metadata = build_norm_metadata(args.dataset_dir)
+        torch.save(norm_metadata, args.stats_path)
+        print(f"Validated and saved normalization metadata to: {args.stats_path}")
         
-    # 2. Dataset and Train/Eval Split
-    full_dataset = CFMDataset(args.dataset_dir, stats_path=args.stats_path, limit=args.limit)
-    
-    # Deterministic split: 90% for training, 10% for validation/evaluation
-    val_size = int(len(full_dataset) * 0.1)
-    train_size = len(full_dataset) - val_size
-    train_dataset, val_dataset = random_split(
-        full_dataset, 
-        [train_size, val_size], 
-        generator=torch.Generator().manual_seed(42)
+    # 2. Dataset splits
+    train_dataset = CFMDataset(
+        args.dataset_dir,
+        stats_path=args.stats_path,
+        limit=args.limit,
+        target_sampling=args.target_sampling,
+    )
+    val_dataset = CFMDataset(
+        args.eval_dataset_dir,
+        stats_path=args.stats_path,
+        limit=args.limit,
+        target_sampling=args.target_sampling,
     )
     
     train_loader = DataLoader(
@@ -103,9 +132,11 @@ def train_cfm(args):
         drop_last=False
     )
     
-    print(f"Loaded dataset with {len(full_dataset)} total samples.")
+    print(f"Loaded training dataset from: {args.dataset_dir}")
+    print(f"Loaded evaluation dataset from: {args.eval_dataset_dir}")
     print(f"  Training samples: {len(train_dataset)} | Batches: {len(train_loader)}")
     print(f"  Evaluation samples: {len(val_dataset)} | Batches: {len(val_loader)}")
+    print(f"Using target sampling strategy: {args.target_sampling}")
     
     # 3. Initialize Models
     seed_conditioner = Sphere_Grouping_Global_Interaction(
@@ -119,10 +150,36 @@ def train_cfm(args):
     params = list(seed_conditioner.parameters()) + list(mlp.parameters())
     optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=args.weight_decay)
     scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs)
+
+    if resume_mode:
+        resume_payload = torch.load(
+            resume_checkpoint_path,
+            map_location=device,
+            weights_only=False,
+        )
+        seed_conditioner.load_state_dict(resume_payload['seed_conditioner_state_dict'])
+        mlp.load_state_dict(resume_payload['mlp_state_dict'])
+        optimizer.load_state_dict(resume_payload['optimizer_state_dict'])
+        if 'scheduler_state_dict' in resume_payload:
+            scheduler.load_state_dict(resume_payload['scheduler_state_dict'])
+        start_epoch = int(resume_payload['epoch']) + 1
+        final_epoch = int(resume_payload['epoch']) + args.epochs
+        print(
+            f"Resume state loaded at epoch {resume_payload['epoch']}. "
+            f"Training will continue through epoch {final_epoch}."
+        )
     
     # Target CFM keeps each seed-conditioned target paired with its own seed.
     FM = build_flow_matcher(args.fm_type, args.fm_sigma)
+    if min(args.rot_loss_weight, args.width_loss_weight, args.depth_loss_weight) < 0:
+        raise ValueError("Loss weights must be non-negative.")
+    if args.rot_loss_weight + args.width_loss_weight + args.depth_loss_weight <= 0:
+        raise ValueError("At least one loss weight must be positive.")
     print(f"Using torchcfm matcher: {args.fm_type} (sigma={args.fm_sigma})")
+    print(
+        "Using loss weights: "
+        f"rot={args.rot_loss_weight}, width={args.width_loss_weight}, depth={args.depth_loss_weight}"
+    )
     
     # Create checkpoints directory & log file
     os.makedirs(args.checkpoint_dir, exist_ok=True)
@@ -135,14 +192,14 @@ def train_cfm(args):
             
     # 4. Training Loop
     print("\nStarting CFM training split...")
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(start_epoch, final_epoch + 1):
         # ------------------ TRAINING STEP ------------------
         seed_conditioner.train()
         mlp.train()
         
         train_epoch_loss = 0.0
         train_batches = 0
-        pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{args.epochs} [Train]")
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{final_epoch} [Train]")
         for batch in pbar:
             x1 = batch['x1'].to(device)  # [B, 1024, 5]
             target_valid_mask = batch['target_valid_mask'].to(device)  # [B, 1024]
@@ -162,8 +219,15 @@ def train_cfm(args):
             # Predict velocity
             v_pred = mlp(xt, t_batch, seed_cond)  # [B, 1024, 5]
             
-            # Masked MSE loss ignores seeds with no valid grasp config.
-            loss = masked_mse_loss(v_pred, ut, target_valid_mask)
+            # Masked weighted MSE ignores seeds with no valid grasp config.
+            loss = masked_weighted_mse_loss(
+                v_pred,
+                ut,
+                target_valid_mask,
+                rot_weight=args.rot_loss_weight,
+                width_weight=args.width_loss_weight,
+                depth_weight=args.depth_loss_weight,
+            )
             
             # Optimize
             optimizer.zero_grad()
@@ -184,7 +248,7 @@ def train_cfm(args):
         val_epoch_loss = 0.0
         val_batches = 0
         with torch.no_grad():
-            for batch in tqdm(val_loader, desc=f"Epoch {epoch}/{args.epochs} [Eval]"):
+            for batch in tqdm(val_loader, desc=f"Epoch {epoch}/{final_epoch} [Eval]"):
                 x1 = batch['x1'].to(device)  # [B, 1024, 5]
                 target_valid_mask = batch['target_valid_mask'].to(device)  # [B, 1024]
                 seed_xyz = batch['seed_xyz'].to(device)  # [B, 1024, 3]
@@ -197,7 +261,14 @@ def train_cfm(args):
                 
                 seed_cond = seed_conditioner(seed_xyz, seed_feats).transpose(1, 2).contiguous()
                 v_pred = mlp(xt, t_batch, seed_cond)
-                loss = masked_mse_loss(v_pred, ut, target_valid_mask)
+                loss = masked_weighted_mse_loss(
+                    v_pred,
+                    ut,
+                    target_valid_mask,
+                    rot_weight=args.rot_loss_weight,
+                    width_weight=args.width_loss_weight,
+                    depth_weight=args.depth_loss_weight,
+                )
                 val_epoch_loss += loss.item()
                 val_batches += 1
                 
@@ -219,6 +290,7 @@ def train_cfm(args):
             'seed_conditioner_state_dict': seed_conditioner.state_dict(),
             'mlp_state_dict': mlp.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': scheduler.state_dict(),
             'train_loss': avg_train_loss,
             'eval_loss': avg_val_loss,
             'args': vars(args)
@@ -231,11 +303,15 @@ def train_cfm(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Train Conditional Flow Matching Grasp Pose Generator")
     parser.add_argument('--dataset_dir', type=str, default='/media/dsp520/Grasp_2T/graspnet/cfm_dataset_seed5d/train',
-                        help='Directory of cached pt training files')
+                        help='Directory of cached .pt training split files')
+    parser.add_argument('--eval_dataset_dir', type=str, default='/media/dsp520/Grasp_2T/graspnet/cfm_dataset_seed5d/eval',
+                        help='Directory of cached .pt evaluation split files')
     parser.add_argument('--stats_path', type=str, default='/media/dsp520/Grasp_2T/graspnet/cfm_seed5d_norm_stats.pt',
-                        help='Path to normalization stats')
+                        help='Path to fixed normalization metadata')
     parser.add_argument('--checkpoint_dir', type=str, default='flow/results',
                         help='Directory to save model checkpoints')
+    parser.add_argument('--resume_checkpoint', type=str, default='',
+                        help='Optional path to flowgrasp checkpoint to continue training from')
     parser.add_argument('--batch_size', type=int, default=16, help='Training batch size')
     parser.add_argument('--epochs', type=int, default=20, help='Number of epochs to train')
     parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate')
@@ -251,6 +327,19 @@ if __name__ == '__main__':
         help='torchcfm matcher: target is recommended for seed-conditioned grasp CFM'
     )
     parser.add_argument('--fm_sigma', type=float, default=0.0, help='Conditional flow matcher sigma')
+    parser.add_argument(
+        '--target_sampling',
+        type=str,
+        default='top8_rot_weighted',
+        choices=['top8_rot_weighted', 'best_score', 'score_weighted', 'uniform'],
+        help='How to select one 5D target from each valid seed grasp pool'
+    )
+    parser.add_argument('--rot_loss_weight', type=float, default=1.0,
+                        help='Group loss weight for the 3D Lie rotation velocity')
+    parser.add_argument('--width_loss_weight', type=float, default=1.0,
+                        help='Group loss weight for the gripper width velocity')
+    parser.add_argument('--depth_loss_weight', type=float, default=1.0,
+                        help='Group loss weight for the grasp depth velocity')
     
     args = parser.parse_args()
     

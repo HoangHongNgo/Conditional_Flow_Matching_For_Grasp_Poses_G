@@ -11,28 +11,41 @@ class CFMDataset(Dataset):
     all seeds, samples one grasp configuration for each valid seed, and marks
     invalid seeds so the training loss can ignore them.
     """
-    def __init__(self, dataset_dir, stats_path=None, limit=None):
+    def __init__(self, dataset_dir, stats_path=None, limit=None, target_sampling='top8_rot_weighted'):
         """Initialize the cached CFM dataset.
 
         Args:
             dataset_dir (str): Directory containing cached .pt scene files.
-            stats_path (str | None): Optional path to normalization stats.
+            stats_path (str | None): Optional path to fixed normalization metadata.
             limit (int | None): Optional maximum number of files to load.
+            target_sampling (str): Strategy for selecting one target from each
+                seed's grasp pool. Use 'top8_rot_weighted' to sample from the
+                best-score grasp and its 7 nearest rotation neighbors, 'best_score'
+                for a stable unimodal target, 'score_weighted' for stochastic
+                score-weighted sampling, or 'uniform' for unweighted stochastic
+                sampling.
         """
         self.dataset_dir = dataset_dir
+        self.target_sampling = target_sampling
         self.files = sorted([f for f in os.listdir(dataset_dir) if f.endswith('.pt')])
         if limit is not None:
             self.files = self.files[:limit]
             
         if not self.files:
             raise FileNotFoundError(f"No .pt files found in {dataset_dir}")
+
+        valid_sampling = {'top8_rot_weighted', 'best_score', 'score_weighted', 'uniform'}
+        if self.target_sampling not in valid_sampling:
+            raise ValueError(
+                f"target_sampling must be one of {sorted(valid_sampling)}, got {target_sampling!r}"
+            )
             
-        # Load or compute normalization stats
+        # Load fixed normalization metadata.
         if stats_path is not None and os.path.exists(stats_path):
-            self.stats = torch.load(stats_path, map_location='cpu')
-            print(f"Loaded normalization stats from: {stats_path}")
+            self.stats = torch.load(stats_path, map_location='cpu', weights_only=True)
+            print(f"Loaded normalization metadata from: {stats_path}")
         else:
-            print("Warning: stats_path not found. Please calculate statistics first.")
+            print("Warning: stats_path not found. Targets will use raw scale.")
             self.stats = None
 
     def __len__(self):
@@ -40,9 +53,9 @@ class CFMDataset(Dataset):
         return len(self.files)
 
     def __getitem__(self, idx):
-        """Sample one score-weighted 5D grasp target for every seed in a scene."""
+        """Sample one 5D grasp target for every valid seed in a scene."""
         file_path = os.path.join(self.dataset_dir, self.files[idx])
-        data = torch.load(file_path, map_location='cpu')
+        data = torch.load(file_path, map_location='cpu', weights_only=True)
         
         # 1. Seed XYZ and Features
         # Original shapes:
@@ -68,8 +81,37 @@ class CFMDataset(Dataset):
 
             valid_count = int(grasp_count[seed_idx].item())
             scores = score_pools[seed_idx, :valid_count]  # [Ki]
-            probs = scores / scores.sum()
-            grasp_idx = torch.multinomial(probs, num_samples=1).item()
+            if self.target_sampling == 'best_score':
+                grasp_idx = torch.argmax(scores).item()
+            elif self.target_sampling == 'score_weighted':
+                probs = scores / scores.sum().clamp_min(1e-8)
+                grasp_idx = torch.multinomial(probs, num_samples=1).item()
+            elif self.target_sampling == 'top8_rot_weighted':
+                best_idx = torch.argmax(scores)  # []
+                rot_candidates = rot_pools[seed_idx, :valid_count]  # [Ki, 3]
+                best_rot = rot_candidates[best_idx].unsqueeze(0)  # [1, 3]
+                rot_dist = torch.linalg.norm(rot_candidates - best_rot, dim=-1)  # [Ki]
+
+                if valid_count <= 8:
+                    selected_idx = torch.arange(valid_count, dtype=torch.long)  # [Ki]
+                else:
+                    candidate_idx = torch.arange(valid_count, dtype=torch.long)
+                    neighbor_idx = candidate_idx[candidate_idx != best_idx]  # [Ki - 1]
+                    neighbor_dist = rot_dist[neighbor_idx]  # [Ki - 1]
+                    nearest_local = torch.argsort(
+                        neighbor_dist,
+                        stable=True,
+                    )[:7]  # [7]
+                    selected_idx = torch.cat(
+                        [best_idx.reshape(1), neighbor_idx[nearest_local]],
+                        dim=0,
+                    )  # [8]
+                selected_scores = scores[selected_idx]  # [<=8]
+                probs = selected_scores / selected_scores.sum().clamp_min(1e-8)
+                local_idx = torch.multinomial(probs, num_samples=1).item()
+                grasp_idx = selected_idx[local_idx].item()
+            else:
+                grasp_idx = torch.randint(valid_count, (1,)).item()
 
             x1_raw[seed_idx, :3] = rot_pools[seed_idx, grasp_idx]  # [3]
             x1_raw[seed_idx, 3] = width_pools[seed_idx, grasp_idx]

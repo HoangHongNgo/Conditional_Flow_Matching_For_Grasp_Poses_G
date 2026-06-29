@@ -72,11 +72,15 @@ class GraspVelocityMLP(nn.Module):
         in_dim = (2 * state_dim) + cond_dim
 
         self.prediction_head = nn.Sequential(
-            nn.Linear(in_dim, in_dim // 2),
-            nn.ReLU(),
-            nn.Linear(in_dim // 2, in_dim // 4),
-            nn.ReLU(),
-            nn.Linear(in_dim // 4, grasp_dim),
+            nn.Linear(in_dim, 256),
+            nn.Mish(),
+            nn.Linear(256, 128),
+            nn.Mish(),
+            nn.Linear(128, 64),
+            nn.Mish(),
+            nn.Linear(64, 32),
+            nn.Mish(),
+            nn.Linear(32, grasp_dim),
         )
 
     def forward(self, x_t, t, seed_cond):
@@ -118,7 +122,6 @@ class GraspVelocityMLP(nn.Module):
         step_feat = self.step_encoder(t_flat)
         # Shape: [B * M, state_dim]
         sample_feat = self.sample_encoder(x_t_flat)
-
         fused_feat = torch.cat([sample_feat, step_feat, cond_flat], dim=-1)
         v_flat = self.prediction_head(fused_feat)  # [B * M, 5]
         
@@ -230,6 +233,8 @@ class economic_graspable(nn.Module):
         # Generate the downsample point (1024 per scene) using the furthest point sampling
         seed_features_graspable = []
         seed_xyz_graspable = []
+        seed_graspness_graspable = []
+        seed_object_ids_graspable = []
         graspable_num_batch = 0.
         
         for i in range(B):
@@ -237,6 +242,11 @@ class economic_graspable(nn.Module):
             graspable_num_batch += cur_mask.sum()
             cur_feat = seed_features_flipped[i][cur_mask]
             cur_seed_xyz = seed_xyz[i][cur_mask]
+            cur_graspness = graspness_score[i][cur_mask]
+            if 'segmentation_label' in end_points:
+                cur_object_ids = end_points['segmentation_label'][i][cur_mask].long()
+            else:
+                cur_object_ids = torch.full((cur_graspness.shape[0],), -1, dtype=torch.long, device=cur_graspness.device)
 
             # [1, M, 3]
             cur_seed_xyz = cur_seed_xyz.unsqueeze(0)
@@ -256,18 +266,29 @@ class economic_graspable(nn.Module):
             
             # [512, 1024]
             cur_feat = gather_operation(cur_feat_flipped, fps_idxs).squeeze(0).contiguous()
+            fps_idxs_flat = fps_idxs.squeeze(0).long()
+            cur_graspness = cur_graspness[fps_idxs_flat].contiguous()
+            cur_object_ids = cur_object_ids[fps_idxs_flat].contiguous()
 
             seed_features_graspable.append(cur_feat)
             seed_xyz_graspable.append(cur_seed_xyz)
+            seed_graspness_graspable.append(cur_graspness)
+            seed_object_ids_graspable.append(cur_object_ids)
             
         # [B, 1024, 3]
         seed_xyz_graspable = torch.stack(seed_xyz_graspable, 0)
         
         # [B, 512, 1024]
         seed_features_graspable = torch.stack(seed_features_graspable)
+        # [B, 1024]
+        seed_graspness_graspable = torch.stack(seed_graspness_graspable, 0)
+        # [B, 1024]
+        seed_object_ids_graspable = torch.stack(seed_object_ids_graspable, 0)
         
         end_points['xyz_graspable'] = seed_xyz_graspable
         end_points['seed_features_graspable'] = seed_features_graspable
+        end_points['seed_graspness_graspable'] = seed_graspness_graspable
+        end_points['seed_object_ids_graspable'] = seed_object_ids_graspable
         end_points['D: Graspable Points'] = graspable_num_batch / B
 
         return end_points

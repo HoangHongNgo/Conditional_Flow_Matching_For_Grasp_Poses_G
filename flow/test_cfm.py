@@ -7,7 +7,7 @@ import time
 import numpy as np
 import torch
 from graspnetAPI import GraspGroup, GraspNetEval
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 
 # Add workspace root to sys.path.
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -19,20 +19,107 @@ if any(arg in {'-h', '--help'} for arg in sys.argv[1:]):
 from flow.models.grasp_cfm import GraspVelocityMLP
 from flow.models.modules_flow import Sphere_Grouping_Global_Interaction
 from flow.models.scoring_network import ScoringMLP, logits_to_expected_score
-from flow.tests.test_cfm import (
-    extract_scene_inputs,
-    generate_averaged_cfm_grasps,
-    load_evaluation_dataset,
-    resolve_cfm_checkpoint,
-    resolve_dataset_index,
-    select_top_seed_indices,
-)
+from flow.utils.cfm_solver import euler_solve
 from flow.utils.lie import exp_so3
+from libs.pointnet2.pointnet2_utils import furthest_point_sample, gather_operation
 from models.economicgrasp import economicgrasp
 from utils.arguments import cfgs
 from utils.collision_detector import ModelFreeCollisionDetector
+import MinkowskiEngine as ME
 
 sys.argv = _ORIGINAL_ARGV
+
+
+class CachedCFMSplitDataset(Dataset):
+    """Load cached seed-conditioned CFM samples saved by generate_dataset.py."""
+
+    def __init__(self, split_dir, split=None):
+        """Initialize the cached split dataset from one directory of .pt files."""
+        self.split_dir = split_dir
+        files = sorted(
+            os.path.join(split_dir, name)
+            for name in os.listdir(split_dir)
+            if name.endswith('.pt')
+        )
+        if split is not None:
+            files = [
+                file_path for file_path in files
+                if cached_file_belongs_to_split(file_path, split)
+            ]
+        self.files = files
+        if not self.files:
+            raise FileNotFoundError(f"No .pt files found under {split_dir}")
+
+    def __len__(self):
+        """Return the number of cached samples."""
+        return len(self.files)
+
+    def __getitem__(self, idx):
+        """Load one cached CFM sample."""
+        return torch.load(self.files[idx], map_location='cpu', weights_only=False)
+
+
+def resolve_dataset_index(raw_dataset, scene_name, frame_id):
+    """Map a scene/frame pair to the corresponding GraspNet dataset index."""
+    return raw_dataset.scenename.index(scene_name) + int(frame_id)
+
+
+def scene_name_belongs_to_split(scene_name, split):
+    """Return whether a GraspNet test scene belongs to one evaluation split."""
+    scene_id = int(scene_name.split('_')[-1])
+    if split == 'test_seen':
+        return 100 <= scene_id < 130
+    if split == 'test_similar':
+        return 130 <= scene_id < 160
+    if split == 'test_novel':
+        return 160 <= scene_id < 190
+    return True
+
+
+def cached_file_belongs_to_split(file_path, split):
+    """Return whether a sequential sample_XXXXXX.pt cache file belongs to a test split."""
+    file_stem = os.path.splitext(os.path.basename(file_path))[0]
+    if not file_stem.startswith('sample_') or not file_stem[7:].isdigit():
+        sample = torch.load(file_path, map_location='cpu', weights_only=False)
+        return scene_name_belongs_to_split(sample['scene_name'], split)
+
+    sample_idx = int(file_stem[7:])
+    scene_id = 100 + (sample_idx // 256)
+    if split == 'test_seen':
+        return 100 <= scene_id < 130
+    if split == 'test_similar':
+        return 130 <= scene_id < 160
+    if split == 'test_novel':
+        return 160 <= scene_id < 190
+    return True
+
+
+def resolve_cached_split_dir(cached_dataset_root, split):
+    """Resolve either root/test_seen-style or root/test-style cached datasets."""
+    split_dir = os.path.join(cached_dataset_root, split)
+    if os.path.isdir(split_dir):
+        return split_dir, None
+
+    test_dir = os.path.join(cached_dataset_root, 'test')
+    if os.path.isdir(test_dir):
+        return test_dir, split
+
+    raise FileNotFoundError(
+        f"Expected cached split directory {split_dir} or combined test directory {test_dir}."
+    )
+
+
+def resolve_cfm_checkpoint(checkpoint_path):
+    """Resolve a CFM checkpoint path, preferring the newest seed-conditioner checkpoint."""
+    if checkpoint_path:
+        return checkpoint_path
+
+    candidates = glob.glob("flow/results/*/flowgrasp_latest.tar")
+    if not candidates:
+        raise FileNotFoundError("No flowgrasp_latest.tar found under flow/results/*/.")
+
+    candidates.sort(key=os.path.getmtime)
+    return candidates[-1]
 
 
 def resolve_scoring_checkpoint(checkpoint_path):
@@ -111,6 +198,113 @@ def build_scoring_model(args, device):
     return model, scoring_checkpoint_path
 
 
+def extract_scene_inputs(base_net, batch_data):
+    """Extract seed coordinates, features, graspness scores, and object ids from a raw batch."""
+    seed_xyz = batch_data['point_clouds']  # [B, point_num, 3]
+    B, point_num, _ = seed_xyz.shape
+
+    coordinates_batch, features_batch = ME.utils.sparse_collate(
+        [coord for coord in batch_data['coordinates_for_voxel']],
+        [feat for feat in np.ones_like(seed_xyz.cpu()).astype(np.float32)],
+    )
+    coordinates_batch, features_batch, _, batch_data['quantize2original'] = ME.utils.sparse_quantize(
+        coordinates_batch,
+        features_batch,
+        return_index=True,
+        return_inverse=True,
+    )
+
+    device = seed_xyz.device
+    coordinates_batch = coordinates_batch.to(device)
+    features_batch = features_batch.to(device)
+    mink_input = ME.SparseTensor(features_batch, coordinates=coordinates_batch)
+
+    seed_features = base_net.backbone(mink_input).F
+    seed_features = seed_features[batch_data['quantize2original']].view(
+        B,
+        point_num,
+        -1,
+    ).transpose(1, 2)  # [B, 512, point_num]
+
+    batch_data = base_net.graspable(seed_features, batch_data)
+    seed_features_flipped = seed_features.transpose(1, 2)
+    objectness_score = batch_data['objectness_score']  # [B, 2, point_num]
+    graspness_score = batch_data['graspness_score'].squeeze(1)  # [B, point_num]
+    segmentation_label = batch_data.get('segmentation_label')
+    if segmentation_label is not None:
+        segmentation_label = segmentation_label.long()
+
+    objectness_pred = torch.argmax(objectness_score, 1)
+    graspable_mask = (objectness_pred == 1) & (graspness_score > cfgs.graspness_threshold)
+
+    seed_xyz_graspable = []
+    seed_features_graspable = []
+    seed_graspness_graspable = []
+    seed_object_ids_graspable = []
+    for i in range(B):
+        cur_mask = graspable_mask[i]
+        if cur_mask.sum() == 0:
+            cur_mask = torch.ones_like(cur_mask, dtype=torch.bool)
+
+        cur_feat = seed_features_flipped[i][cur_mask]
+        cur_seed_xyz = seed_xyz[i][cur_mask].unsqueeze(0)  # [1, M, 3]
+        cur_graspness = graspness_score[i][cur_mask]
+        if segmentation_label is None:
+            cur_object_ids = torch.full_like(cur_graspness, fill_value=-1, dtype=torch.long)
+        else:
+            cur_object_ids = segmentation_label[i][cur_mask]
+        fps_idxs = furthest_point_sample(cur_seed_xyz, base_net.M_points)  # [1, 1024]
+        fps_idxs_flat = fps_idxs.squeeze(0).long()
+
+        cur_seed_xyz_flipped = cur_seed_xyz.transpose(1, 2).contiguous()
+        cur_seed_xyz = gather_operation(cur_seed_xyz_flipped, fps_idxs).transpose(
+            1,
+            2,
+        ).squeeze(0).contiguous()
+
+        cur_feat_flipped = cur_feat.unsqueeze(0).transpose(1, 2).contiguous()
+        cur_feat = gather_operation(cur_feat_flipped, fps_idxs).squeeze(0).contiguous()
+        cur_graspness = cur_graspness[fps_idxs_flat].contiguous()
+        cur_object_ids = cur_object_ids[fps_idxs_flat].contiguous()
+
+        seed_xyz_graspable.append(cur_seed_xyz)
+        seed_features_graspable.append(cur_feat)
+        seed_graspness_graspable.append(cur_graspness)
+        seed_object_ids_graspable.append(cur_object_ids)
+
+    return (
+        torch.stack(seed_xyz_graspable, 0),  # [B, 1024, 3]
+        torch.stack(seed_features_graspable),  # [B, 512, 1024]
+        torch.stack(seed_graspness_graspable, 0),  # [B, 1024]
+        torch.stack(seed_object_ids_graspable, 0),  # [B, 1024]
+    )
+
+
+def generate_averaged_cfm_grasps(seed_conditioner, mlp, seed_xyz, seed_feats, norm_metadata, args, device):
+    """Generate CFM grasps multiple times and average the 5D pose per seed."""
+    num_samples = max(1, int(args.num_generation_samples))
+    B, num_seed, _ = seed_xyz.shape  # [B, 1024, 3]
+    x_pred_sum = None
+
+    for _ in range(num_samples):
+        x0 = torch.randn(B, num_seed, 5, device=device)  # [B, 1024, 5]
+        x_pred_sample = euler_solve(
+            seed_conditioner,
+            mlp,
+            x0,
+            seed_xyz,
+            seed_feats,
+            norm_metadata,
+            n_steps=args.n_steps,
+        )  # [B, 1024, 5]
+        if x_pred_sum is None:
+            x_pred_sum = x_pred_sample
+        else:
+            x_pred_sum = x_pred_sum + x_pred_sample
+
+    return x_pred_sum / float(num_samples)
+
+
 @torch.no_grad()
 def score_generated_grasps(scoring_model, seed_conditioner, x_pred, seed_xyz, seed_feats):
     """Score every generated grasp using [grasp_5d, seed_cond_128] inputs."""
@@ -181,6 +375,52 @@ def resolve_frame_metadata(args, raw_dataset, batch_idx, batch_size, batch_items
     return scene_names, frame_ids, raw_indices
 
 
+def resolve_cached_dataset_source(cached_dataset_root, split):
+    """Resolve cached test data from either a root directory or a direct test directory."""
+    normalized_root = os.path.abspath(cached_dataset_root)
+
+    if os.path.basename(normalized_root) == 'test' and os.path.isdir(normalized_root):
+        return normalized_root, split
+
+    return resolve_cached_split_dir(normalized_root, split)
+
+
+def load_evaluation_dataset(args, split):
+    """Build the evaluation dataset for one split, supporting raw and cached test inputs."""
+    if args.cached_dataset_root:
+        split_dir, filter_split = resolve_cached_dataset_source(args.cached_dataset_root, split)
+        dataset = CachedCFMSplitDataset(split_dir, split=filter_split)
+        collate = lambda batch: batch
+        scene_list = None
+        raw_dataset = economicgrasp_raw_dataset(split)
+        return dataset, collate, scene_list, raw_dataset
+
+    dataset = economicgrasp_raw_dataset(split)
+    return dataset, flow_collate_fn, dataset.scene_list(), dataset
+
+
+def economicgrasp_raw_dataset(split):
+    """Build the raw GraspNet dataset used for metadata lookup and uncached evaluation."""
+    from dataset.graspnet_dataset import GraspNetDataset
+
+    return GraspNetDataset(
+        cfgs.dataset_root,
+        split=split,
+        camera=cfgs.camera,
+        num_points=cfgs.num_point,
+        remove_outlier=True,
+        load_label=False,
+        augment=False,
+    )
+
+
+def flow_collate_fn(batch):
+    """Import the project GraspNet collate function lazily to avoid side effects at module import."""
+    from dataset.graspnet_dataset import collate_fn
+
+    return collate_fn(batch)
+
+
 def evaluate_split(args, split, save_dir):
     """Run CFM inference, score all generated grasps, save results, and evaluate one split."""
     device_name = args.device if args.device else ("cuda" if torch.cuda.is_available() else "cpu")
@@ -198,7 +438,7 @@ def evaluate_split(args, split, save_dir):
     )
     print(f"Dataset size: {len(dataset)}. Batches: {len(dataloader)}")
 
-    base_net = build_base_network(device)
+    base_net = None if args.cached_dataset_root else build_base_network(device)
     seed_conditioner, mlp, _ = build_cfm_models(args, device)
     scoring_model, _ = build_scoring_model(args, device)
     norm_metadata = torch.load(args.stats_path, map_location=device, weights_only=True)
@@ -214,22 +454,10 @@ def evaluate_split(args, split, save_dir):
                 batch_items = batch_data if isinstance(batch_data, list) else [batch_data]
                 seed_xyz = torch.cat([item['xyz_graspable'].to(device) for item in batch_items], 0)
                 seed_feats = torch.cat([item['seed_features_graspable'].to(device) for item in batch_items], 0)
-                if 'seed_graspness_graspable' in batch_items[0] and 'seed_object_ids_graspable' in batch_items[0]:
-                    seed_object_ids = torch.cat(
-                        [item['seed_object_ids_graspable'].to(device) for item in batch_items],
-                        0,
-                    )
-                else:
-                    seed_object_ids = torch.full(
-                        (seed_xyz.shape[0], seed_xyz.shape[1]),
-                        -1,
-                        dtype=torch.long,
-                        device=device,
-                    )
             else:
                 batch_data = move_batch_to_device(batch_data, device)
                 batch_items = None
-                seed_xyz, seed_feats, _, seed_object_ids = extract_scene_inputs(base_net, batch_data)
+                seed_xyz, seed_feats, _, _ = extract_scene_inputs(base_net, batch_data)
 
             batch_size = seed_xyz.shape[0]
             scene_names, frame_ids, raw_indices = resolve_frame_metadata(
@@ -260,7 +488,7 @@ def evaluate_split(args, split, save_dir):
 
         for b in range(batch_size):
             gg_all = graspgroup_from_5d(x_pred[b], seed_xyz[b], scoring_scores[b])
-            keep_mask = torch.ones(x_pred.shape[1], dtype=torch.bool, device=device)  # [N]
+            gg_to_save = gg_all
 
             if cfgs.collision_thresh > 0:
                 cloud, _ = raw_dataset.get_data(raw_indices[b], return_raw_cloud=True)
@@ -270,22 +498,12 @@ def evaluate_split(args, split, save_dir):
                     approach_dist=0.05,
                     collision_thresh=cfgs.collision_thresh,
                 )
-                keep_mask = torch.from_numpy(~collision_mask).to(device=device, dtype=torch.bool)
-
-            selected_indices = select_top_seed_indices(
-                scoring_scores[b],
-                seed_object_ids[b],
-                keep_mask,
-                max_per_object=args.max_per_object,
-                total_top_k=args.total_top_k,
-            )
-            selected_np = selected_indices.detach().cpu().numpy()
-            gg_selected = GraspGroup(gg_all.grasp_group_array[selected_np])
+                gg_to_save = gg_all[~collision_mask]
 
             save_scene_dir = os.path.join(save_dir, scene_names[b], cfgs.camera)
             save_path = os.path.join(save_scene_dir, str(frame_ids[b]).zfill(4) + '.npy')
             os.makedirs(save_scene_dir, exist_ok=True)
-            gg_selected.save_npy(save_path)
+            gg_to_save.save_npy(save_path)
 
         if batch_idx % 20 == 0:
             print(f"Evaluated batch: {batch_idx}, elapsed: {time.time() - tic:.2f}s")
@@ -348,10 +566,6 @@ def parse_args():
     parser.add_argument('--num_workers', type=int, default=2, help='DataLoader workers for full evaluation.')
     parser.add_argument('--num_generation_samples', type=int, default=1,
                         help='Number of CFM generations to average per seed before scoring.')
-    parser.add_argument('--max_per_object', type=int, default=10,
-                        help='Maximum selected grasps per object before scene-level top-k.')
-    parser.add_argument('--total_top_k', type=int, default=50,
-                        help='Number of scored grasps saved per frame.')
     parser.add_argument('--eval_proc', type=int, default=6, help='Number of graspnetAPI evaluation workers.')
     parser.add_argument('--device', type=str, default='', help='Device override, e.g. cuda:0 or cpu.')
     parser.add_argument('--scoring_input_dim', type=int, default=133, help='Fallback scoring-model input dimension.')

@@ -201,3 +201,153 @@ def process_grasp_labels(end_points, max_k=192):
     end_points['seed_grasp_max_k'] = max_k
 
     return end_points
+
+
+def process_scoring_label(end_points):
+    """
+    Build fixed 300-view seed-level labels from the nearest GT grasp point.
+
+    This variant mirrors the scene/object label transformation in
+    ``process_grasp_labels`` but changes the last selection step:
+    each seed keeps the full 300-view score/rotation/width/depth label bank from the single nearest
+    grasp point within a 5mm radius. The full 300 rotation labels are converted
+    to scene-frame Lie vectors. Seeds without any GT grasp point inside the
+    radius are marked invalid.
+
+    Args:
+        end_points: dict containing model predictions and ground truth labels.
+            Expected keys include:
+            - 'xyz_graspable': Tensor of shape [B, 1024, 3] representing seed points.
+            - 'object_poses_list': List of length B, containing lists of object poses [3, 4].
+            - 'grasp_points_list': List of length B, containing lists of object grasp points [P, 3].
+            - 'grasp_rotations_list': List of length B, containing lists of object grasp rotations [P, 300].
+            - 'grasp_depth_list': List of length B, containing lists of object grasp depths [P, 300].
+            - 'grasp_scores_list': List of length B, containing lists of object grasp scores [P, 300].
+            - 'grasp_widths_list': List of length B, containing lists of object grasp widths [P, 300].
+            - 'top_view_index_list': List of length B, containing lists of object top view indices [P, 300].
+
+    Returns:
+        dict: The input dictionary updated with fixed-width seed-level tensors:
+            - 'seed_grasp_rot_lie': Tensor with shape [B, N, 300, 3].
+            - 'seed_grasp_width': Tensor with shape [B, N, 300].
+            - 'seed_grasp_depth': Tensor with shape [B, N, 300], in meters.
+            - 'seed_grasp_score': Tensor with shape [B, N, 300].
+            - 'seed_grasp_slot_mask': Boolean tensor with shape [B, N, 300].
+            - 'seed_valid_mask': Boolean tensor with shape [B, N].
+    """
+    seed_xyzs = end_points['xyz_graspable']  # [B, N, 3]
+    B, num_seed, _ = seed_xyzs.shape
+    device = seed_xyzs.device
+
+    dist_thresh = 0.005  # 5mm
+    num_view = cfgs.num_view
+    seed_grasp_rot_lie = torch.zeros((B, num_seed, num_view, 3), dtype=torch.float32, device=device)
+    seed_grasp_width = torch.zeros((B, num_seed, num_view), dtype=torch.float32, device=device)
+    seed_grasp_depth = torch.zeros((B, num_seed, num_view), dtype=torch.float32, device=device)
+    seed_grasp_score = torch.zeros((B, num_seed, num_view), dtype=torch.float32, device=device)
+    seed_grasp_slot_mask = torch.zeros((B, num_seed, num_view), dtype=torch.bool, device=device)
+    seed_valid_mask = torch.zeros((B, num_seed), dtype=torch.bool, device=device)
+
+    for b in range(B):
+        seed_xyz = seed_xyzs[b]  # [N, 3]
+        poses = end_points['object_poses_list'][b]  # list of [3, 4]
+
+        grasp_points_merged = []
+        grasp_rotations_merged = []
+        grasp_depth_merged = []
+        grasp_scores_merged = []
+        grasp_widths_merged = []
+        grasp_views_rot_merged = []
+        top_view_index_merged = []
+
+        # Merge all object labels into the scene coordinate frame.
+        for obj_idx, pose in enumerate(poses):
+            grasp_points = end_points['grasp_points_list'][b][obj_idx]  # [P, 3]
+            grasp_rotations = end_points['grasp_rotations_list'][b][obj_idx]  # [P, 300]
+            grasp_depth = end_points['grasp_depth_list'][b][obj_idx]  # [P, 300]
+            grasp_scores = end_points['grasp_scores_list'][b][obj_idx]  # [P, 300]
+            grasp_widths = end_points['grasp_widths_list'][b][obj_idx]  # [P, 300]
+            top_view_index = end_points['top_view_index_list'][b][obj_idx]  # [P, 300]
+            num_grasp_points = grasp_points.size(0)
+
+            grasp_views = generate_grasp_views(cfgs.num_view).to(device)  # [300, 3]
+            grasp_points_trans = transform_point_cloud(grasp_points, pose, '3x4')  # [P, 3]
+
+            angles = torch.zeros(grasp_views.size(0), dtype=grasp_views.dtype, device=device)  # [300]
+            grasp_views_rot = batch_viewpoint_params_to_matrix(-grasp_views, angles)  # [300, 3, 3]
+            grasp_views_rot_trans = torch.matmul(pose[:3, :3], grasp_views_rot)  # [300, 3, 3]
+            grasp_views_rot_trans = grasp_views_rot_trans.unsqueeze(0).expand(num_grasp_points, -1, -1, -1)
+            # Shape: [P, 300, 3, 3]
+
+            grasp_points_merged.append(grasp_points_trans)
+            top_view_index_merged.append(top_view_index)
+            grasp_rotations_merged.append(grasp_rotations)
+            grasp_depth_merged.append(grasp_depth)
+            grasp_scores_merged.append(grasp_scores)
+            grasp_widths_merged.append(grasp_widths)
+            grasp_views_rot_merged.append(grasp_views_rot_trans)
+
+        if len(grasp_points_merged) == 0:
+            continue
+
+        grasp_points_merged = torch.cat(grasp_points_merged, dim=0)  # [M, 3]
+        top_view_index_merged = torch.cat(top_view_index_merged, dim=0)  # [M, 300]
+        grasp_rotations_merged = torch.cat(grasp_rotations_merged, dim=0)  # [M, 300]
+        grasp_depth_merged = torch.cat(grasp_depth_merged, dim=0)  # [M, 300]
+        grasp_scores_merged = torch.cat(grasp_scores_merged, dim=0)  # [M, 300]
+        grasp_widths_merged = torch.cat(grasp_widths_merged, dim=0)  # [M, 300]
+        grasp_views_rot_merged = torch.cat(grasp_views_rot_merged, dim=0)  # [M, 300, 3, 3]
+
+        dists = torch.cdist(seed_xyz.unsqueeze(0), grasp_points_merged.unsqueeze(0)).squeeze(0)  # [N, M]
+        nearest_dist, nearest_idx = torch.min(dists, dim=1)  # [N], [N]
+        valid_seed = nearest_dist <= dist_thresh  # [N]
+
+        if not valid_seed.any():
+            continue
+
+        valid_seed_indices = torch.where(valid_seed)[0]  # [Nv]
+        valid_point_indices = nearest_idx[valid_seed_indices]  # [Nv]
+
+        selected_top_view_idx = top_view_index_merged[valid_point_indices].long()  # [Nv, 300]
+        selected_angle_idx = grasp_rotations_merged[valid_point_indices].to(torch.float32)  # [Nv, 300]
+        selected_width = grasp_widths_merged[valid_point_indices]  # [Nv, 300]
+        selected_depth = 0.01 + grasp_depth_merged[valid_point_indices].float() * 0.01  # [Nv, 300]
+        selected_score = grasp_scores_merged[valid_point_indices]  # [Nv, 300]
+
+        slot_mask = torch.ones_like(selected_score, dtype=torch.bool)  # [Nv, 300]
+        gather_index = selected_top_view_idx.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, 3, 3)  # [Nv, 300, 3, 3]
+        selected_view_rot = torch.gather(
+            grasp_views_rot_merged[valid_point_indices],
+            1,
+            gather_index,
+        )  # [Nv, 300, 3, 3]
+
+        grasp_angle = selected_angle_idx * (np.pi / 12.0)  # [Nv, 300]
+        ones = torch.ones_like(grasp_angle)
+        zeros = torch.zeros_like(grasp_angle)
+        sin = torch.sin(grasp_angle)
+        cos = torch.cos(grasp_angle)
+        angle_rot = torch.stack(
+            [ones, zeros, zeros, zeros, cos, -sin, zeros, sin, cos],
+            dim=-1,
+        ).reshape(valid_seed_indices.numel(), num_view, 3, 3)  # [Nv, 300, 3, 3]
+
+        full_rot = torch.matmul(selected_view_rot, angle_rot)  # [Nv, 300, 3, 3]
+        rot_lie = rotation_matrix_to_lie_vector(full_rot.reshape(-1, 3, 3)).reshape(-1, num_view, 3)  # [Nv, 300, 3]
+
+        seed_grasp_rot_lie[b, valid_seed_indices] = rot_lie
+        seed_grasp_width[b, valid_seed_indices] = selected_width
+        seed_grasp_depth[b, valid_seed_indices] = selected_depth
+        seed_grasp_score[b, valid_seed_indices] = selected_score
+        seed_grasp_slot_mask[b, valid_seed_indices] = slot_mask
+        seed_valid_mask[b, valid_seed_indices] = True
+
+    end_points['seed_grasp_rot_lie'] = seed_grasp_rot_lie  # [B, N, 300, 3]
+    end_points['seed_grasp_width'] = seed_grasp_width  # [B, N, 300]
+    end_points['seed_grasp_depth'] = seed_grasp_depth  # [B, N, 300]
+    end_points['seed_grasp_score'] = seed_grasp_score  # [B, N, 300]
+    end_points['seed_grasp_slot_mask'] = seed_grasp_slot_mask  # [B, N, 300]
+    end_points['seed_valid_mask'] = seed_valid_mask  # [B, N]
+    end_points['seed_grasp_max_k'] = num_view
+
+    return end_points

@@ -2,12 +2,9 @@ import os
 import torch
 import numpy as np
 
-def compute_norm_stats(dataset_dir, max_samples=100):
-
-    """
-    Validate cached 5D CFM dataset files and return fixed normalization metadata.
-    """
-    print(f"Scanning {dataset_dir} to compute normalization statistics...")
+def build_norm_metadata(dataset_dir, max_samples=100):
+    """Validate cached 5D CFM labels and return fixed normalization metadata."""
+    print(f"Scanning {dataset_dir} to validate CFM normalization metadata...")
     files = [f for f in os.listdir(dataset_dir) if f.endswith('.pt')]
     if not files:
         raise FileNotFoundError(f"No cached dataset files found in {dataset_dir}")
@@ -23,7 +20,19 @@ def compute_norm_stats(dataset_dir, max_samples=100):
     if not has_seed_conditioned_labels:
         raise ValueError("No seed-conditioned CFM labels found in cached dataset files.")
 
-    return {'target_dim': 5}
+    return {
+        'target_dim': 5,
+        'normalization': 'fixed_5d_grasp',
+        'rotation_scale': 'pi',
+        'width_scale_m': 0.1,
+        'depth_min_m': 0.01,
+        'depth_range_m': 0.03,
+    }
+
+
+def compute_norm_stats(dataset_dir, max_samples=100):
+    """Backward-compatible alias for fixed CFM normalization metadata."""
+    return build_norm_metadata(dataset_dir, max_samples=max_samples)
 
 def normalize_x(x, stats=None):
     """
